@@ -1,0 +1,18 @@
+services:
+  - name: API Gateway
+    type: gateway
+
+  - name: Order Service
+    type: microservice
+
+  - name: Payment Service
+    type: microservice
+
+  - name: PostgreSQL
+    type: database
+
+connections:
+  - [API Gateway, Order Service]
+  - [Order Service, Payment Service]
+  - [Order Service, PostgreSQL]
+  - [Payment Service, PostgreSQL]

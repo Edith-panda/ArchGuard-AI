@@ -1,0 +1,116 @@
+[
+  {
+    "id": "db-high-availability",
+    "title": "Database High Availability",
+    "category": "Reliability",
+    "keywords": [
+      "database",
+      "postgresql",
+      "single point failure",
+      "failover",
+      "replication",
+      "availability"
+    ],
+    "content": "Production databases should avoid single-instance failure modes. Consider replication, automated failover, tested backups, recovery procedures, health monitoring, and deployment across appropriate failure domains."
+  },
+  {
+    "id": "database-per-service",
+    "title": "Service Data Ownership",
+    "category": "Architecture",
+    "keywords": [
+      "shared database",
+      "microservice",
+      "database",
+      "coupling",
+      "data ownership"
+    ],
+    "content": "Microservices should have clearly defined data ownership boundaries. A shared database can create schema coupling, deployment coordination, shared performance bottlenecks, and a larger failure domain. Database-per-service is one possible pattern when domain isolation justifies the operational complexity."
+  },
+  {
+    "id": "circuit-breaker",
+    "title": "Circuit Breaker and Timeouts",
+    "category": "Reliability",
+    "keywords": [
+      "service dependency",
+      "timeout",
+      "retry",
+      "circuit breaker",
+      "cascading failure",
+      "microservice"
+    ],
+    "content": "Synchronous service dependencies should use bounded timeouts and failure isolation. Retries should use limits and backoff. Circuit breakers and graceful degradation can reduce cascading failures when downstream services become unhealthy."
+  },
+  {
+    "id": "async-messaging",
+    "title": "Asynchronous Communication",
+    "category": "Scalability",
+    "keywords": [
+      "queue",
+      "pubsub",
+      "event",
+      "asynchronous",
+      "traffic",
+      "scalability",
+      "payment"
+    ],
+    "content": "Asynchronous messaging can decouple producers from consumers and absorb traffic bursts. It is appropriate when the business workflow does not require an immediate synchronous response. Systems must also account for retries, duplicate messages, ordering requirements, and dead-letter handling."
+  },
+  {
+    "id": "load-scaling",
+    "title": "Horizontal Scaling",
+    "category": "Scalability",
+    "keywords": [
+      "traffic",
+      "autoscaling",
+      "bottleneck",
+      "load",
+      "gateway",
+      "microservice"
+    ],
+    "content": "Horizontally scalable services should minimize local state, define resource limits, expose reliable health checks, and use measurable signals for autoscaling. Downstream databases, queues, and external APIs must also be considered because scaling application instances can move the bottleneck elsewhere."
+  },
+  {
+    "id": "least-privilege",
+    "title": "Least Privilege",
+    "category": "Security",
+    "keywords": [
+      "security",
+      "iam",
+      "rbac",
+      "permission",
+      "access",
+      "database",
+      "service"
+    ],
+    "content": "Services should receive only the permissions required for their responsibilities. Separate identities, scoped roles, secret management, network restrictions, and regular permission review reduce the blast radius of compromised services."
+  },
+  {
+    "id": "secret-management",
+    "title": "Secret Management",
+    "category": "Security",
+    "keywords": [
+      "secret",
+      "password",
+      "credential",
+      "api key",
+      "token",
+      "security"
+    ],
+    "content": "Credentials and secrets should not be embedded in source code or configuration committed to repositories. Use a dedicated secret-management system, controlled access policies, rotation, and auditing."
+  },
+  {
+    "id": "observability",
+    "title": "Observability",
+    "category": "Reliability",
+    "keywords": [
+      "logging",
+      "monitoring",
+      "latency",
+      "error",
+      "metrics",
+      "trace",
+      "reliability"
+    ],
+    "content": "Distributed systems should expose structured logs, metrics, traces, latency distributions, error rates, saturation indicators, and dependency health. Observability is required to validate whether architecture assumptions remain true in production."
+  }
+]

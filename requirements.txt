@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+PyYAML
+networkx
+google-genai
+pydantic
+python-dotenv
+python-hcl2
