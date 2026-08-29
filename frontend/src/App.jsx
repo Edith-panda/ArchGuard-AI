@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-
+import ArchitectureGraph from "./components/ArchitectureGraph";
 import {
   Background,
   Controls,
@@ -51,6 +51,9 @@ function App() {
   const [analysis, setAnalysis] =
     useState(null);
 
+  const [ingestionResult, setIngestionResult] =
+  useState(null);
+
   const [loading, setLoading] =
     useState(false);
 
@@ -101,10 +104,314 @@ function App() {
     );
   }, [architecture]);
 
+  const [
+  remediationPlan,
+  setRemediationPlan,
+] = useState(null);
+
+  const [
+  proposedDiffs,
+  setProposedDiffs,
+] = useState({});
+
+const [
+  approvalStatuses,
+  setApprovalStatuses,
+] = useState({});
+
+  async function generateRemediationPlan() {
+
+    if (!analysis?.findings?.length) {
+      return;
+    }
+
+    try {
+
+      const response =
+        await fetch(
+          "http://127.0.0.1:8000/remediation-plan",
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            body: JSON.stringify({
+              findings:
+                analysis.findings,
+            }),
+          }
+        );
+
+
+      const data =
+        await response.json();
+
+
+      if (!response.ok) {
+
+        throw new Error(
+          data.detail ||
+          "Failed to generate remediation plan."
+        );
+
+      }
+
+
+      setRemediationPlan(
+        data
+      );
+
+    } catch (err) {
+
+      setError(
+        err.message
+      );
+
+    }
+  }
+
+  const [
+  executionResults,
+  setExecutionResults,
+] = useState({});
+
+  async function executeInSandbox(
+  proposalId
+) {
+
+  try {
+
+    setError("");
+
+    const response =
+      await fetch(
+        `http://127.0.0.1:8000/remediation/${proposalId}/execute-sandbox`,
+        {
+          method: "POST",
+        }
+      );
+
+    const data =
+      await response.json();
+
+    if (!response.ok) {
+
+      const message =
+        typeof data.detail ===
+        "string"
+          ? data.detail
+          : data.detail?.message ||
+            "Sandbox execution failed.";
+
+      throw new Error(
+        message
+      );
+    }
+
+    setExecutionResults(
+      (current) => ({
+        ...current,
+        [proposalId]: data,
+      })
+    );
+
+  } catch (err) {
+
+    setError(
+      err.message ||
+      "Sandbox execution failed."
+    );
+
+  }
+}
+
+  async function loadProposedDiff(
+  proposalId
+) {
+
+  try {
+
+    const response =
+      await fetch(
+        `http://127.0.0.1:8000/remediation/${proposalId}/diff`
+      );
+
+    const data =
+      await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.detail ||
+        "Failed to load proposed diff."
+      );
+    }
+
+    setProposedDiffs(
+      (current) => ({
+        ...current,
+        [proposalId]:
+          data.proposed_diff,
+      })
+    );
+
+  } catch (err) {
+
+    setError(
+      err.message
+    );
+
+  }
+}
+
+async function approveProposal(
+  proposalId
+) {
+
+  const response =
+    await fetch(
+      "http://127.0.0.1:8000/remediation/approve",
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+
+        body: JSON.stringify({
+          proposal_id:
+            proposalId,
+        }),
+      }
+    );
+
+
+  const data =
+    await response.json();
+
+
+  if (!response.ok) {
+
+    setError(
+      data.detail ||
+      "Approval failed."
+    );
+
+    return;
+  }
+
+
+  setApprovalStatuses(
+    (current) => ({
+      ...current,
+      [proposalId]:
+        "approved",
+    })
+  );
+}
+
+async function rejectProposal(
+  proposalId
+) {
+
+  const response =
+    await fetch(
+      "http://127.0.0.1:8000/remediation/reject",
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/json",
+        },
+
+        body: JSON.stringify({
+          proposal_id:
+            proposalId,
+        }),
+      }
+    );
+
+
+  const data =
+    await response.json();
+
+
+  if (!response.ok) {
+
+    setError(
+      data.detail ||
+      "Rejection failed."
+    );
+
+    return;
+  }
+
+
+  setApprovalStatuses(
+    (current) => ({
+      ...current,
+      [proposalId]:
+        "rejected",
+    })
+  );
+}
+
+async function executeInSandbox(
+  proposalId
+) {
+  try {
+    setError("");
+
+    const response =
+      await fetch(
+        `http://127.0.0.1:8000/remediation/${proposalId}/execute-sandbox`,
+        {
+          method: "POST",
+        }
+      );
+
+    const data =
+      await response.json();
+
+    if (!response.ok) {
+      const message =
+        typeof data.detail === "string"
+          ? data.detail
+          : data.detail?.message ||
+            "Sandbox execution failed.";
+
+      throw new Error(message);
+    }
+
+    setExecutionResults(
+      (current) => ({
+        ...current,
+        [proposalId]: data,
+      })
+    );
+
+  } catch (err) {
+    setError(
+      err.message ||
+      "Sandbox execution failed."
+    );
+  }
+}
+
 
  async function analyzeArchitecture() {
   setLoading(true);
   setError("");
+  setAnalysis(null);
+  setIngestionResult(null);
+  setRemediationPlan(null);
+  setProposedDiffs({});
+  setApprovalStatuses({});
+  setExecutionResults({});
 
   const hasFiles =
     files.length > 0;
@@ -174,6 +481,9 @@ function App() {
           "Artifact ingestion failed."
       );
     }
+    setIngestionResult(
+    ingestResult
+  );
 
 
     /*
@@ -500,57 +810,141 @@ Example:
 
         </section>
 
+<section className="panel">
 
-        <section className="panel">
+  <div className="section-heading">
 
-          <div
-            className=
-              "section-heading"
-          >
+    <div>
+      <p className="step-label">
+        Architecture Digital Twin
+      </p>
 
-            <div>
+      <h2>
+        Interactive Dependency Topology
+      </h2>
 
-              <p className="step-label">
-                Architecture Graph
-              </p>
+      <p className="section-description">
+        Explore reconstructed components,
+        dependencies, evidence and confidence.
+      </p>
+    </div>
 
-              <h2>
-                Dependency topology
-              </h2>
+    <span className="metric">
+      {
+        ingestionResult
+          ?.digital_twin
+          ?.entities
+          ?.length
+        ??
+        architecture.services.length
+      }{" "}
+      components
+    </span>
 
-            </div>
-
-
-            <span className="metric">
-              {
-                architecture
-                  .services
-                  .length
-              }{" "}
-              components
-            </span>
-
-          </div>
+  </div>
 
 
-          <div
-            className=
-              "graph-container"
-          >
+  {ingestionResult?.digital_twin ? (
 
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              fitView
-            >
-              <Background />
-              <Controls />
-            </ReactFlow>
+  <div>
 
-          </div>
+    <div className="summary-grid">
 
-        </section>
+      <div className="summary-card">
+        <span>
+          Digital Twin Components
+        </span>
 
+        <strong>
+          {
+            ingestionResult
+              .digital_twin
+              .entities
+              ?.length
+            ?? 0
+          }
+        </strong>
+      </div>
+
+
+      <div className="summary-card">
+        <span>
+          Dependencies
+        </span>
+
+        <strong>
+          {
+            ingestionResult
+              .digital_twin
+              .connections
+              ?.length
+            ?? 0
+          }
+        </strong>
+      </div>
+
+
+      <div className="summary-card">
+        <span>
+          Entity Resolutions
+        </span>
+
+        <strong>
+          {
+            ingestionResult
+              .digital_twin
+              .resolution_log
+              ?.length
+            ?? 0
+          }
+        </strong>
+      </div>
+
+
+      <div className="summary-card">
+        <span>
+          Evidence Sources
+        </span>
+
+        <strong>
+          {
+            ingestionResult
+              .artifacts
+              ?.length
+            ?? 0
+          }
+        </strong>
+      </div>
+
+    </div>
+
+
+    <ArchitectureGraph
+      digitalTwin={
+        ingestionResult.digital_twin
+      }
+    />
+
+  </div>
+
+) : (
+
+  <div className="graph-container">
+
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      fitView
+    >
+      <Background />
+      <Controls />
+    </ReactFlow>
+
+  </div>
+
+)}
+
+</section>
 
         {analysis && (
           <>
@@ -740,6 +1134,403 @@ Example:
                 </div>
 
               </div>
+              <section className="panel">
+
+  <div className="section-heading">
+
+    <div>
+
+      <p className="step-label">
+        Remediation
+      </p>
+
+      <h2>
+        Proposed Architecture Fixes
+      </h2>
+
+      <p className="section-description">
+        Generate safe remediation proposals
+        for the detected architecture risks.
+        No changes are executed automatically.
+      </p>
+
+    </div>
+
+  </div>
+
+
+  {!remediationPlan && (
+
+    <button
+      className="primary-button"
+      onClick={
+        generateRemediationPlan
+      }
+    >
+      Generate Remediation Plan
+    </button>
+
+  )}
+
+
+  {remediationPlan && (
+
+    <div className="findings">
+
+      {
+        remediationPlan
+          .proposals
+          .map(
+            (
+              proposal
+            ) => (
+
+              <article
+                className="finding-card"
+                key={
+                  proposal
+                    .proposal_id
+                }
+              >
+
+                <div className="finding-top">
+
+                  <span
+                    className={
+                      `severity ${
+                        proposal
+                          .finding
+                          .severity
+                      }`
+                    }
+                  >
+                    {
+                      proposal
+                        .finding
+                        .severity
+                    }
+                  </span>
+
+
+                  <span className="risk-score">
+                    Risk{" "}
+                    {
+                      proposal
+                        .finding
+                        .risk_score
+                    }
+                    /100
+                  </span>
+
+                </div>
+
+
+                <h3>
+                  {
+                    proposal
+                      .finding
+                      .component
+                  }
+                </h3>
+
+
+                <p>
+                  {
+                    proposal
+                      .recommended_change
+                  }
+                </p>
+
+
+                <div className="recommendation">
+
+                  <strong>
+                    Proposed actions
+                  </strong>
+
+                  <ul>
+
+                    {
+                      proposal
+                        .proposed_actions
+                        .map(
+                          (
+                            action,
+                            index
+                          ) => (
+
+                            <li
+                              key={
+                                index
+                              }
+                            >
+                              {action}
+                            </li>
+
+                          )
+                        )
+                    }
+
+                  </ul>
+
+                </div>
+
+
+                <div
+                  style={{
+                    display: "flex",
+                    gap: "10px",
+                    marginTop: "16px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() =>
+                      loadProposedDiff(
+                        proposal.proposal_id
+                      )
+                    }
+                  >
+                    Preview Proposed Diff
+                  </button>
+
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() =>
+                      approveProposal(
+                        proposal.proposal_id
+                      )
+                    }
+                    disabled={
+                      approvalStatuses[
+                        proposal.proposal_id
+                      ] === "approved" ||
+                      approvalStatuses[
+                        proposal.proposal_id
+                      ] === "rejected"
+                    }
+                  >
+                    {
+                      approvalStatuses[
+                        proposal.proposal_id
+                      ] === "approved"
+                        ? "✓ Approved"
+                        : "Approve Proposal"
+                    }
+                  </button>
+
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() =>
+                      rejectProposal(
+                        proposal.proposal_id
+                      )
+                    }
+                    disabled={
+                      approvalStatuses[
+                        proposal.proposal_id
+                      ] === "approved" ||
+                      approvalStatuses[
+                        proposal.proposal_id
+                      ] === "rejected"
+                    }
+                  >
+                    {
+                      approvalStatuses[
+                        proposal.proposal_id
+                      ] === "rejected"
+                        ? "Rejected"
+                        : "Reject"
+                    }
+                  </button>
+                </div>
+
+
+                {
+                  proposedDiffs[
+                    proposal.proposal_id
+                  ] && (
+                    <div
+                      style={{
+                        marginTop: "18px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontSize: "12px",
+                          fontWeight: 700,
+                          marginBottom: "8px",
+                        }}
+                      >
+                        PROPOSED CHANGE
+                      </div>
+
+                      <pre
+                        style={{
+                          background: "#08111f",
+                          border: "1px solid #28364e",
+                          borderRadius: "12px",
+                          padding: "16px",
+                          overflowX: "auto",
+                          fontSize: "12px",
+                          lineHeight: 1.7,
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {
+                          proposedDiffs[
+                            proposal.proposal_id
+                          ].diff
+                        }
+                      </pre>
+
+                      <div
+                        style={{
+                          fontSize: "12px",
+                          opacity: 0.65,
+                          marginTop: "8px",
+                        }}
+                      >
+                        {
+                          proposedDiffs[
+                            proposal.proposal_id
+                          ].note
+                        }
+                      </div>
+                    </div>
+                  )
+                }
+
+                {
+  executionResults[
+    proposal.proposal_id
+  ] && (
+
+    <div
+      style={{
+        marginTop: "16px",
+        padding: "16px",
+        border:
+          "1px solid #2d405e",
+        borderRadius: "12px",
+        background: "#0b1524",
+      }}
+    >
+
+      <div
+        style={{
+          fontWeight: 700,
+          marginBottom: "10px",
+        }}
+      >
+        Sandbox Execution
+      </div>
+
+
+      <div>
+        {
+          executionResults[
+            proposal.proposal_id
+          ].validation.valid
+            ? "✓ Validation passed"
+            : "✕ Validation failed"
+        }
+      </div>
+
+
+      <div
+        style={{
+          marginTop: "6px",
+          fontSize: "12px",
+          opacity: 0.7,
+        }}
+      >
+        {
+          executionResults[
+            proposal.proposal_id
+          ].validation.message
+        }
+      </div>
+
+
+      <div
+        style={{
+          marginTop: "12px",
+          fontSize: "12px",
+          opacity: 0.6,
+        }}
+      >
+        🔒 Local sandbox only.
+        No external or production
+        system was modified.
+      </div>
+
+    </div>
+  )
+}
+
+                <div
+                  style={{
+                    marginTop:
+                      "16px",
+
+                    padding:
+                      "12px",
+
+                    border:
+                      "1px solid #3b4962",
+
+                    borderRadius:
+                      "10px",
+                  }}
+                >
+
+                  {
+                    approvalStatuses[
+                      proposal.proposal_id
+                    ] === "approved"
+                      ? "✓ Proposal approved"
+                      : approvalStatuses[
+                          proposal.proposal_id
+                        ] === "rejected"
+                        ? "✕ Proposal rejected"
+                        : "🔒 Human approval required"
+                  }
+
+                  <div
+                    style={{
+                      opacity:
+                        0.7,
+
+                      marginTop:
+                        "5px",
+
+                      fontSize:
+                        "12px",
+                    }}
+                  >
+                    No infrastructure or
+                    source-code changes have
+                    been executed.
+                  </div>
+
+                </div>
+
+              </article>
+
+            )
+          )
+      }
+
+    </div>
+
+  )}
+
+</section>
 
 
               <div className="findings">

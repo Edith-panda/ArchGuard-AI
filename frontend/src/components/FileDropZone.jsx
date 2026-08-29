@@ -1,4 +1,7 @@
 import { useRef, useState } from "react";
+import ArchitectureGraph
+  from "./ArchitectureGraph";
+
 
 
 const SUPPORTED_EXTENSIONS = [
@@ -73,6 +76,11 @@ function formatFileSize(bytes) {
     (1024 * 1024)
   ).toFixed(1)} MB`;
 }
+
+// const [result, setResult] =
+//   useState(null);
+//   setResult(data);
+
 
 
 function FileDropZone({

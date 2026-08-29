@@ -941,3 +941,38 @@ textarea:focus {
   }
 
 }
+/* =====================================================
+   Architecture Digital Twin / React Flow
+   ===================================================== */
+
+.react-flow__controls {
+  box-shadow: none !important;
+  border: 1px solid #27344b !important;
+}
+
+.react-flow__controls-button {
+  background: #121c2d !important;
+  border-bottom: 1px solid #27344b !important;
+  color: #dbe3f3 !important;
+  fill: #dbe3f3 !important;
+}
+
+.react-flow__controls-button:hover {
+  background: #1b2941 !important;
+}
+
+.react-flow__controls-button svg {
+  fill: #dbe3f3 !important;
+}
+
+.react-flow__edge-path {
+  stroke-linecap: round;
+}
+
+.react-flow__node {
+  font-family: inherit;
+}
+
+.react-flow__attribution {
+  display: none;
+}
