@@ -1,3 +1,4 @@
+from backend.app.multimodal_parser import get_gemini_client
 from asyncio import graph
 from platform import architecture
 from fastapi import FastAPI, HTTPException
@@ -97,6 +98,67 @@ from .approval_engine import (
     reject_proposal,
 )
 
+from .verification_engine import (
+    verify_remediation,
+)
+
+from pydantic import Field
+from .conversation_router import route_request
+from .assistant_engine import (
+    generate_assistant_response,
+)
+
+from .conversation_router import (
+    EngineeringIntent,
+    route_request,
+)
+from backend.app.assistant_dispatcher import (
+    dispatch_assistant_request,
+)
+
+from backend.app.conversation_router import (
+    EngineeringIntent,
+)
+from typing import List, Optional
+
+from fastapi import (
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+)
+from .conversation_router import route_request
+
+from .ingestion import (
+    MAX_FILE_SIZE,
+    create_artifact,
+    decode_file_content,
+    is_binary_file,
+    is_supported,
+)
+
+from .artifact_parser import (
+    reconstruct_architecture,
+)
+from .ingestion_service import (
+    process_architecture_inputs,
+)
+from .conversation_router import route_request
+from backend.app.graph_engine import build_graph
+from backend.app.risk_engine import analyze_risks
+from backend.app.well_architected import score_well_architected
+from backend.app.scenario_lab import run_scenario
+from .assistant_executor import (
+    execute_assistant_intent,
+    AssistantExecutionError,
+)
+
+from .conversation_router import (
+    EngineeringIntent,
+)
+
+print("Imports OK")
+
 
 
 app = FastAPI(
@@ -125,6 +187,21 @@ class ArchitectureInput(BaseModel):
     connections: list[list[str]]
 
 
+
+
+class VerificationRequest(BaseModel):
+    before_findings: list[dict]
+    after_findings: list[dict]
+
+    before_well_architected: dict = Field(
+        default_factory=dict
+    )
+
+    after_well_architected: dict = Field(
+        default_factory=dict
+    )
+
+
 class FailureRequest(BaseModel):
     architecture: ArchitectureInput
     component: str
@@ -148,6 +225,10 @@ class ParseRequest(BaseModel):
 class RemediationRequest(BaseModel):
     findings: list[dict]
 
+class AssistantRequest(BaseModel):
+    prompt: str
+    architecture: dict | None = None
+    has_files: bool = False
 
 def architecture_to_dict(
     architecture: ArchitectureInput,
@@ -1365,4 +1446,294 @@ def parse_architecture(
     return {
         "status": "success",
         "architecture": architecture,
+    }
+
+@app.post("/verify-remediation")
+def verify_remediation_endpoint(
+    request: VerificationRequest,
+):
+    """
+    Compare architecture risk before and after
+    an approved remediation.
+
+    This endpoint performs deterministic
+    verification only. It does not modify
+    infrastructure or call external systems.
+    """
+
+    result = verify_remediation(
+        before_findings=(
+            request.before_findings
+        ),
+        after_findings=(
+            request.after_findings
+        ),
+        before_well_architected=(
+            request.before_well_architected
+        ),
+        after_well_architected=(
+            request.after_well_architected
+        ),
+    )
+
+    return {
+        "status": "success",
+        "verification": result,
+    }
+@app.post("/assistant")
+def architecture_assistant(
+    request: AssistantRequest,
+):
+    prompt = request.prompt.strip()
+
+    if not prompt:
+        raise HTTPException(
+            status_code=400,
+            detail="Prompt cannot be empty.",
+        )
+
+    has_architecture = bool(
+        request.architecture
+    )
+
+    routing = route_request(
+        prompt=prompt,
+        has_architecture=has_architecture,
+        has_files=request.has_files,
+    )
+
+    intent = EngineeringIntent(
+        routing["intent"]
+    )
+
+    # For now, only DESIGN and QUESTION
+    # execute conversational Gemini reasoning.
+    if intent not in {
+        EngineeringIntent.DESIGN,
+        EngineeringIntent.QUESTION,
+    }:
+        return {
+            "status": "success",
+            "mode": "conversation",
+            "routing": routing,
+            "execution": {
+                "started": False,
+                "reason": (
+                    "This intent will be connected "
+                    "to its specialized ArchGuard "
+                    "engine in the next step."
+                ),
+            },
+        }
+
+    try:
+        client = get_gemini_client()
+
+        result = generate_assistant_response(
+            client=client,
+            model_name="gemini-3.6-flash",
+            prompt=prompt,
+            intent=intent,
+            architecture=request.architecture,
+        )
+
+        return {
+            "status": "success",
+            "mode": "conversation",
+            "routing": routing,
+            "execution": {
+                "started": True,
+                "engine": "gemini_architecture_reasoning",
+            },
+            "assistant": result,
+        }
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "ArchGuard conversational reasoning failed: "
+                f"{str(exc)}"
+            ),
+        )
+
+
+  @app.post("/assistant/input")
+async def assistant_input(
+    prompt: str = Form(...),
+    files: Optional[List[UploadFile]] = File(None),
+    manual_input: Optional[str] = Form(None),
+):
+    """
+    Unified conversational entry point for ArchGuard.
+
+    The user can provide:
+    - a natural-language engineering prompt
+    - architecture / engineering artifacts
+    - pasted architecture or stakeholder context
+    - any combination of the above
+
+    Uploaded artifacts are processed through
+    ArchGuard's shared ingestion pipeline.
+    """
+
+    prompt = prompt.strip()
+
+    if not prompt:
+        raise HTTPException(
+            status_code=400,
+            detail="Prompt cannot be empty.",
+        )
+
+    uploaded_files = files or []
+
+    # ------------------------------------------
+    # STEP 1
+    # Understand user-provided artifacts
+    # ------------------------------------------
+
+    try:
+        ingestion = (
+            await process_architecture_inputs(
+                uploaded_files=uploaded_files,
+                manual_input=manual_input,
+            )
+        )
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "ArchGuard could not process "
+                f"the supplied artifacts: {str(exc)}"
+            ),
+        )
+
+    architecture = ingestion.get(
+        "architecture"
+    )
+
+    # ------------------------------------------
+    # STEP 2
+    # Determine engineering intent
+    # ------------------------------------------
+
+    routing = route_request(
+        prompt=prompt,
+        has_architecture=bool(
+            architecture
+        ),
+        has_files=bool(
+            uploaded_files
+        ),
+    )
+
+    # ------------------------------------------
+    # STEP 3
+    # Build ArchGuard context
+    # ------------------------------------------
+
+    context = {
+        "prompt": prompt,
+
+        "architecture_detected":
+            ingestion.get(
+                "architecture_detected",
+                False,
+            ),
+
+        "architecture":
+            architecture,
+
+        "digital_twin":
+            ingestion.get(
+                "digital_twin"
+            ),
+
+        "processed_files":
+            ingestion.get(
+                "processed_files",
+                [],
+            ),
+
+        "multimodal":
+            ingestion.get(
+                "multimodal",
+                {},
+            ),
+
+        "manual_input_provided":
+            bool(
+                manual_input
+                and manual_input.strip()
+            ),
+    }
+
+    # ------------------------------------------
+    # STEP 4
+    # Return current understanding
+    #
+    # Specialized engines are deliberately
+    # NOT executed yet.
+    # ------------------------------------------
+
+        # ------------------------------------------
+    # STEP 4
+    # Execute appropriate ArchGuard capability
+    # ------------------------------------------
+
+    intent_value = routing.get(
+        "intent"
+    )
+
+    try:
+
+        intent = EngineeringIntent(
+            intent_value
+        )
+
+        execution_result = (
+            execute_assistant_intent(
+                intent=intent,
+                prompt=prompt,
+                architecture=architecture,
+            )
+        )
+
+    except AssistantExecutionError as exc:
+
+        execution_result = {
+            "status": "blocked",
+            "error": str(exc),
+        }
+
+    except Exception as exc:
+
+        execution_result = {
+            "status": "error",
+            "error": str(exc),
+        }
+
+    # ------------------------------------------
+    # STEP 5
+    # Return unified ArchGuard response
+    # ------------------------------------------
+
+    return {
+        "status": "success",
+
+        "mode":
+            "conversational_architecture",
+
+        "routing":
+            routing,
+
+        "context":
+            context,
+
+        "execution": {
+            "started": True,
+            "result":
+                execution_result,
+        },
     }
