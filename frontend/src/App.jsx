@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import ArchitectureGraph from "./components/ArchitectureGraph";
 import FileDropZone from "./components/FileDropZone";
 import "./App.css";
@@ -28,6 +28,154 @@ function connectionParts(connection) {
   };
 }
 
+function stripMarkdown(value = "") {
+  return value
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .trim();
+}
+
+function parseEngineeringAnswer(text = "") {
+  const lines = text.replace(/\r/g, "").split("\n");
+  const sections = [];
+  let current = { title: "Overview", lines: [], codeBlocks: [] };
+  let inCode = false;
+  let code = [];
+
+  const pushCurrent = () => {
+    const body = current.lines.join("\n").trim();
+    if (body || current.codeBlocks.length) {
+      sections.push({ ...current, body });
+    }
+  };
+
+  lines.forEach((line) => {
+    if (line.trim().startsWith("```")) {
+      if (inCode) {
+        current.codeBlocks.push(code.join("\n").trim());
+        code = [];
+        inCode = false;
+      } else {
+        inCode = true;
+      }
+      return;
+    }
+
+    if (inCode) {
+      code.push(line);
+      return;
+    }
+
+    const heading = line.match(/^#{2,4}\s+(.*)$/);
+    if (heading) {
+      pushCurrent();
+      current = {
+        title: stripMarkdown(heading[1]).replace(/^\d+\.\s*/, ""),
+        lines: [],
+        codeBlocks: [],
+      };
+      return;
+    }
+
+    if (!line.trim() && !current.lines.length) return;
+    current.lines.push(line);
+  });
+
+  if (inCode && code.length) current.codeBlocks.push(code.join("\n").trim());
+  pushCurrent();
+
+  const allCodeBlocks = sections.flatMap((section) => section.codeBlocks || []);
+  return { sections, allCodeBlocks };
+}
+
+function splitSectionItems(body = "") {
+  const lines = body.split("\n").map((line) => line.trim()).filter(Boolean);
+  const intro = [];
+  const items = [];
+  let current = null;
+
+  lines.forEach((line) => {
+    const numbered = line.match(/^\d+[.)]\s+(.*)$/);
+    const bullet = line.match(/^[-*]\s+(.*)$/);
+    if (numbered) {
+      if (current) items.push(current);
+      current = { title: stripMarkdown(numbered[1]), details: [] };
+      return;
+    }
+    if (bullet) {
+      const value = stripMarkdown(bullet[1]);
+      const labelMatch = value.match(/^([^:]{2,45}):\s*(.*)$/);
+      if (labelMatch) {
+        items.push({ title: labelMatch[1], details: [labelMatch[2]] });
+      } else if (current) {
+        current.details.push(value);
+      } else {
+        items.push({ title: value, details: [] });
+      }
+      return;
+    }
+    if (current) current.details.push(stripMarkdown(line));
+    else intro.push(stripMarkdown(line));
+  });
+
+  if (current) items.push(current);
+  return { intro, items };
+}
+
+function sectionTone(title = "") {
+  const value = title.toLowerCase();
+  if (value.includes("risk") || value.includes("bottleneck")) return "danger";
+  if (value.includes("mitigation") || value.includes("recommend") || value.includes("improve")) return "success";
+  if (value.includes("question") || value.includes("assumption")) return "warning";
+  if (value.includes("component") || value.includes("technology")) return "info";
+  return "neutral";
+}
+
+function EngineeringSection({ section, index }) {
+  const { intro, items } = splitSectionItems(section.body);
+  const tone = sectionTone(section.title);
+
+  return (
+    <section className={`report-section report-${tone}`}>
+      <div className="report-section-head">
+        <span className="report-index">{String(index + 1).padStart(2, "0")}</span>
+        <div>
+          <h4>{section.title}</h4>
+          <small>{tone === "danger" ? "Risks that deserve attention" : tone === "success" ? "Recommended engineering actions" : tone === "warning" ? "Assumptions and information gaps" : "Architecture detail"}</small>
+        </div>
+      </div>
+
+      {intro.length > 0 && (
+        <div className="report-intro">
+          {intro.map((paragraph, i) => <p key={i}>{paragraph}</p>)}
+        </div>
+      )}
+
+      {items.length > 0 && (
+        <div className="report-item-grid">
+          {items.map((item, itemIndex) => (
+            <article className="report-item" key={`${item.title}-${itemIndex}`}>
+              <div className="report-item-number">{itemIndex + 1}</div>
+              <div>
+                <h5>{item.title}</h5>
+                {item.details.map((detail, detailIndex) => <p key={detailIndex}>{detail}</p>)}
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+
+      {section.codeBlocks?.map((block, blockIndex) => (
+        <div className="inline-blueprint" key={blockIndex}>
+          <div className="blueprint-label">Architecture blueprint</div>
+          <pre>{block}</pre>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 function StructuredAnswer({ result }) {
   if (!result) return null;
   const twin = result?.context?.digital_twin || {};
@@ -39,12 +187,12 @@ function StructuredAnswer({ result }) {
   const findings = execution?.findings || [];
   const waf = execution?.well_architected || {};
   const intent = result?.routing?.intent || "analysis";
-  const answer = result?.answer || "Analysis completed.";
+  const parsed = parseEngineeringAnswer(result?.answer || "Analysis completed.");
 
   return (
     <div className="structured-answer">
       <div className="answer-hero">
-        <div><span className="kicker">ARCHGUARD {String(intent).toUpperCase()}</span><h3>Engineering assessment</h3></div>
+        <div><span className="kicker">ARCHGUARD {String(intent).toUpperCase()}</span><h3>Engineering assessment</h3><p>Structured architecture guidance generated from your request and available evidence.</p></div>
         <div className="answer-stats">
           <span><b>{entities.length}</b> components</span>
           <span><b>{connections.length}</b> connections</span>
@@ -52,14 +200,9 @@ function StructuredAnswer({ result }) {
         </div>
       </div>
 
-      <section className="answer-section">
-        <div className="section-label"><span>01</span><div><b>Executive summary</b><small>What ArchGuard recommends and why</small></div></div>
-        <div className="prose-card">{answer}</div>
-      </section>
-
       {entities.length > 0 && (
-        <section className="answer-section">
-          <div className="section-label"><span>02</span><div><b>System components</b><small>Services and infrastructure detected from your evidence</small></div></div>
+        <section className="answer-section compact-section">
+          <div className="section-label"><span>SYS</span><div><b>Detected system components</b><small>Current architecture evidence</small></div></div>
           <div className="component-grid">
             {entities.map((entity, index) => (
               <article className="component-card" key={entity?.id || entityName(entity) || index}>
@@ -72,8 +215,8 @@ function StructuredAnswer({ result }) {
       )}
 
       {connections.length > 0 && (
-        <section className="answer-section">
-          <div className="section-label"><span>03</span><div><b>Connection flow</b><small>How the detected components communicate</small></div></div>
+        <section className="answer-section compact-section">
+          <div className="section-label"><span>FLOW</span><div><b>Connection flow</b><small>How components communicate</small></div></div>
           <div className="connection-list">
             {connections.map((connection, index) => (
               <div className="connection-row" key={`${connection.source}-${connection.target}-${index}`}>
@@ -84,11 +227,15 @@ function StructuredAnswer({ result }) {
         </section>
       )}
 
+      <div className="report-stack">
+        {parsed.sections.map((section, index) => <EngineeringSection key={`${section.title}-${index}`} section={section} index={index} />)}
+      </div>
+
       {findings.length > 0 && (
         <section className="answer-section">
-          <div className="section-label"><span>04</span><div><b>Priority risks & recommendations</b><small>Evidence-backed issues ordered for engineering action</small></div></div>
+          <div className="section-label"><span>RISK</span><div><b>Evidence-backed risk register</b><small>Deterministic findings from ArchGuard engines</small></div></div>
           <div className="answer-risk-grid">
-            {findings.slice(0, 6).map((finding, index) => (
+            {findings.slice(0, 8).map((finding, index) => (
               <article className="answer-risk" key={finding.id || index}>
                 <div className="risk-top"><span className={`severity ${String(finding.severity || "info").toLowerCase()}`}>{finding.severity || "INFO"}</span>{finding.risk_score != null && <span>Risk {finding.risk_score}</span>}</div>
                 <h4>{finding.title || finding.category || "Architecture finding"}</h4>
@@ -105,6 +252,40 @@ function StructuredAnswer({ result }) {
           <div><span className="kicker">GOOGLE WELL-ARCHITECTED</span><b>{Math.round(waf.overall_score)}<small>/100</small></b></div>
           <p>Heuristic architecture score from ArchGuard's deterministic review. It is guidance, not an official Google certification.</p>
         </section>
+      )}
+    </div>
+  );
+}
+
+function BlueprintPanel({ result, digitalTwin }) {
+  const parsed = useMemo(() => parseEngineeringAnswer(result?.answer || ""), [result?.answer]);
+  const architecture = result?.context?.architecture || {};
+  const detectedServices = digitalTwin?.entities?.length ? digitalTwin.entities : (architecture?.services || []);
+  const diagram = parsed.allCodeBlocks.find((block) => /\[|→|↓|│|gateway|database|service|cluster/i.test(block));
+  const proposedSection = parsed.sections.find((section) => /component|proposed architecture|technology/i.test(section.title));
+  const proposedItems = proposedSection ? splitSectionItems(proposedSection.body).items : [];
+
+  if (digitalTwin?.entities?.length) return <ArchitectureGraph digitalTwin={digitalTwin} />;
+
+  if (!diagram && !proposedItems.length && !detectedServices.length) {
+    return <div className="empty-state"><span>◇</span><h3>No architecture blueprint yet</h3><p>Ask ArchGuard for a system design or attach architecture evidence. A generated blueprint will appear here when the answer contains architecture structure.</p></div>;
+  }
+
+  return (
+    <div className="blueprint-panel">
+      {diagram && (
+        <div className="blueprint-canvas">
+          <div className="blueprint-toolbar"><span>GENERATED ARCHITECTURE</span><small>Conceptual design</small></div>
+          <pre>{diagram}</pre>
+        </div>
+      )}
+      {(proposedItems.length > 0 || detectedServices.length > 0) && (
+        <div className="blueprint-components">
+          <div className="blueprint-subhead"><span>COMPONENT INVENTORY</span><b>{proposedItems.length || detectedServices.length}</b></div>
+          {(proposedItems.length ? proposedItems : detectedServices.map((item) => ({ title: entityName(item), details: [entityType(item)] }))).slice(0, 12).map((item, index) => (
+            <article key={`${item.title}-${index}`}><span className="node-dot" /><div><strong>{item.title}</strong>{item.details?.[0] && <small>{item.details[0]}</small>}</div></article>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -177,7 +358,7 @@ function App() {
               <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askArchGuard(e); } }} placeholder="Ask ArchGuard anything about your system..." rows={3} />
               <div className="composer-footer">
                 <button type="button" className="attach" onClick={() => setShowArtifacts((v) => !v)}>＋ Attach files / image {files.length > 0 && <b>{files.length}</b>}</button>
-                <span className="hint">A prompt is required · files are optional</span>
+                <span className="hint">Prompt is required · files / image are optional</span>
                 <button className="send" disabled={loading || !prompt.trim()}>{loading ? "Thinking…" : "Ask ArchGuard →"}</button>
               </div>
             </form>
@@ -187,7 +368,7 @@ function App() {
 
         {showArtifacts && (
           <section className="artifact-drawer">
-            <div className="drawer-head"><div><span className="kicker">OPTIONAL CONTEXT</span><h2>Add engineering evidence</h2></div><button className="close" onClick={() => setShowArtifacts(false)}>×</button></div>
+            <div className="drawer-head"><div><span className="kicker">OPTIONAL CONTEXT</span><h2>Add files, diagrams or engineering evidence</h2></div><button className="close" onClick={() => setShowArtifacts(false)}>×</button></div>
             <FileDropZone files={files} setFiles={setFiles} />
             <label className="manual-label">Or paste architecture, stakeholder requirements, logs, or notes</label>
             <textarea className="manual-area" value={manualInput} onChange={(e) => setManualInput(e.target.value)} placeholder="Paste JSON, YAML, architecture notes, stakeholder requirements..." />
@@ -195,10 +376,10 @@ function App() {
         )}
 
         {messages.length > 0 && (
-          <div className="product-grid">
-            <section className="conversation-panel">
+          <div className="product-grid rich-grid">
+            <section className="conversation-panel wide-conversation">
               <div className="panel-title"><div><span className="kicker">ARCHITECTURE COPILOT</span><h2>Engineering conversation</h2></div><span className={`intent intent-${intent}`}>{intent}</span></div>
-              <div className="messages">
+              <div className="messages rich-messages">
                 {messages.map((message, index) => (
                   <article className={`message ${message.role} ${message.result ? "structured-message" : ""}`} key={`${message.role}-${index}`}>
                     <div className="avatar">{message.role === "user" ? "Y" : "A"}</div>
@@ -214,10 +395,10 @@ function App() {
               </form>
             </section>
 
-            <section className="insight-panel">
-              <div className="tabs"><button className={activeTab === "architecture" ? "active" : ""} onClick={() => setActiveTab("architecture")}>Architecture</button><button className={activeTab === "risks" ? "active" : ""} onClick={() => setActiveTab("risks")}>Risks <b>{findings.length || ""}</b></button><button className={activeTab === "evidence" ? "active" : ""} onClick={() => setActiveTab("evidence")}>Evidence</button></div>
-              {activeTab === "architecture" && <div className="tab-body"><div className="insight-heading"><div><span className="kicker">DIGITAL TWIN</span><h2>System topology</h2></div><span className="metric">{digitalTwin?.entities?.length || 0} components</span></div>{digitalTwin?.entities?.length ? <ArchitectureGraph digitalTwin={digitalTwin} /> : <div className="empty-state"><span>◇</span><h3>No structured architecture yet</h3><p>Attach architecture evidence to reconstruct a Digital Twin. Structured DESIGN/MODIFY graph generation is the next backend capability.</p></div>}</div>}
-              {activeTab === "risks" && <div className="tab-body"><div className="insight-heading"><div><span className="kicker">RISK INTELLIGENCE</span><h2>Detected findings</h2></div>{waf?.overall_score != null && <span className="score">{Math.round(waf.overall_score)}<small>/100</small></span>}</div><div className="risk-list">{findings.length ? findings.map((finding, index) => <article className="risk-card" key={finding.id || index}><div className="risk-top"><span className={`severity ${String(finding.severity || "info").toLowerCase()}`}>{finding.severity || "INFO"}</span>{finding.risk_score != null && <span>Risk {finding.risk_score}</span>}</div><h3>{finding.title || finding.category || "Architecture finding"}</h3><p>{finding.description || finding.message}</p>{finding.recommendation && <div className="recommendation">↳ {finding.recommendation}</div>}</article>) : <div className="empty-state"><span>✓</span><h3>No structured risks returned</h3><p>Run a REVIEW request with architecture context to populate deterministic findings.</p></div>}</div></div>}
+            <section className="insight-panel sticky-insights">
+              <div className="tabs"><button className={activeTab === "architecture" ? "active" : ""} onClick={() => setActiveTab("architecture")}>Blueprint</button><button className={activeTab === "risks" ? "active" : ""} onClick={() => setActiveTab("risks")}>Risks <b>{findings.length || ""}</b></button><button className={activeTab === "evidence" ? "active" : ""} onClick={() => setActiveTab("evidence")}>Evidence</button></div>
+              {activeTab === "architecture" && <div className="tab-body"><div className="insight-heading"><div><span className="kicker">ARCHITECTURE VIEW</span><h2>{digitalTwin?.entities?.length ? "Interactive Digital Twin" : "Generated system blueprint"}</h2></div><span className="metric">{digitalTwin?.entities?.length || result?.context?.architecture?.services?.length || 0} detected</span></div><BlueprintPanel result={result} digitalTwin={digitalTwin} /></div>}
+              {activeTab === "risks" && <div className="tab-body"><div className="insight-heading"><div><span className="kicker">RISK INTELLIGENCE</span><h2>Detected findings</h2></div>{waf?.overall_score != null && <span className="score">{Math.round(waf.overall_score)}<small>/100</small></span>}</div><div className="risk-list">{findings.length ? findings.map((finding, index) => <article className="risk-card" key={finding.id || index}><div className="risk-top"><span className={`severity ${String(finding.severity || "info").toLowerCase()}`}>{finding.severity || "INFO"}</span>{finding.risk_score != null && <span>Risk {finding.risk_score}</span>}</div><h3>{finding.title || finding.category || "Architecture finding"}</h3><p>{finding.description || finding.message}</p>{finding.recommendation && <div className="recommendation">↳ {finding.recommendation}</div>}</article>) : <div className="empty-state"><span>✓</span><h3>No deterministic risks returned</h3><p>Design guidance may still contain projected risks. Upload or provide an existing architecture to run deterministic REVIEW findings.</p></div>}</div></div>}
               {activeTab === "evidence" && <div className="tab-body"><div className="insight-heading"><div><span className="kicker">TRACEABILITY</span><h2>Input & reasoning context</h2></div></div><div className="evidence-grid"><div><span>Intent</span><strong>{intent}</strong></div><div><span>Architecture detected</span><strong>{result?.context?.architecture_detected ? "Yes" : "No"}</strong></div><div><span>Files processed</span><strong>{result?.context?.processed_files?.length || files.length}</strong></div><div><span>Gemini synthesis</span><strong>{result?.synthesis?.status || "—"}</strong></div></div><pre className="raw-context">{JSON.stringify(execution, null, 2)}</pre></div>}
             </section>
           </div>
