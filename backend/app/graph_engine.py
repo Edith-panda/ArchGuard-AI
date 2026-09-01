@@ -7,18 +7,25 @@ def build_architecture_graph(architecture):
     services = architecture.get("services", [])
     connections = architecture.get("connections", [])
 
-    # Add architecture components as graph nodes.
     for service in services:
+        name = service.get("name")
+        if not name:
+            continue
         graph.add_node(
-            service["name"],
-            type=service["type"]
+            name,
+            type=service.get("type", "unknown"),
         )
 
-    # Add dependency relationships as directed edges.
-    for source, destination in connections:
-        graph.add_edge(source, destination)
+    for connection in connections:
+        if isinstance(connection, (list, tuple)) and len(connection) >= 2:
+            graph.add_edge(connection[0], connection[1])
 
     return graph
+
+
+# Conversational-agent compatibility alias.
+def build_graph(architecture):
+    return build_architecture_graph(architecture)
 
 
 def get_graph_summary(graph):

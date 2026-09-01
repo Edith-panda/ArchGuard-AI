@@ -1,181 +1,50 @@
-from backend.app.multimodal_parser import get_gemini_client
-from asyncio import graph
-from platform import architecture
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from typing import List, Optional
 
-from .analyzer import analyze_architecture
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
 from .aggregator import aggregate_findings
+from .analyzer import analyze_architecture
+from .approval_engine import approve_proposal, get_proposal, register_proposals, reject_proposal
+from .artifact_parser import reconstruct_architecture
+from .assistant_engine import generate_assistant_response
+from .assistant_executor import AssistantExecutionError, execute_assistant_intent
+from .assistant_synthesis import synthesize_assistant_response
+from .conversation_router import EngineeringIntent, route_request
 from .deduplicator import deduplicate_findings
+from .diff_engine import generate_proposed_diff
 from .gemini_analyzer import analyze_with_gemini
 from .graph_engine import build_architecture_graph
-from .graph_risk_engine import (
-    analyze_graph_risks,
-    get_critical_components,
-)
+from .graph_risk_engine import analyze_graph_risks, get_critical_components
+from .ingestion_service import process_architecture_inputs
+from .input_parser import parse_architecture_text
+from .multimodal_parser import get_gemini_client
+from .normalizer import normalize_architecture
+from .orchestrator import build_execution_plan, summarize_plan
+from .remediation_engine import build_remediation_plan
+from .retrieval_engine import retrieve_for_architecture
 from .risk_engine import assign_risk_scores
 from .scenario_engine import simulate_component_failure
-from .input_parser import parse_architecture_text
-from .normalizer import normalize_architecture
-from .retrieval_engine import (
-    retrieve_for_architecture,
-)
-
-from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
-from pathlib import Path
-from .ingestion import (
-    MAX_FILES,
-    MAX_FILE_SIZE,
-    create_artifact,
-    decode_file_content,
-    is_binary_file,
-    is_supported,
-)
-from .multimodal_parser import (
-    convert_multimodal_to_architecture,
-    extract_architecture_from_media,
-)
-
-from fastapi import (
-    File,
-    Form,
-    HTTPException,
-    UploadFile,
-)
-from .scenario_lab import (
-    run_scenario,
-)
-from .scenario_engine import simulate_component_failure
-
-
-from .artifact_parser import (
-    reconstruct_architecture,
-)
-from .evidence_engine import (
-    enrich_architecture_with_evidence,
-)
-from .digital_twin import (
-    build_architecture_digital_twin,
-)
-from pathlib import Path
-from typing import List, Optional
-
-from fastapi import (
-    File,
-    Form,
-    HTTPException,
-    UploadFile,
-)
-
-from .well_architected import (
-    score_well_architected,
-)
-from .orchestrator import (
-    build_execution_plan,
-    summarize_plan,
-)
-from .remediation_engine import (
-    build_remediation_plan,
-)
-from .approval_engine import (
-    approve_proposal,
-    get_proposal,
-    register_proposals,
-    reject_proposal,
-)
-
-from .diff_engine import (
-    generate_proposed_diff,
-)
-from .tool_layer import (
-    execute_approved_proposal,
-)
-from .approval_engine import (
-    approve_proposal,
-    get_proposal,
-    register_proposals,
-    reject_proposal,
-)
-
-from .verification_engine import (
-    verify_remediation,
-)
-
-from pydantic import Field
-from .conversation_router import route_request
-from .assistant_engine import (
-    generate_assistant_response,
-)
-
-from .conversation_router import (
-    EngineeringIntent,
-    route_request,
-)
-from backend.app.assistant_dispatcher import (
-    dispatch_assistant_request,
-)
-
-from backend.app.conversation_router import (
-    EngineeringIntent,
-)
-from typing import List, Optional
-
-from fastapi import (
-    File,
-    Form,
-    HTTPException,
-    UploadFile,
-)
-from .conversation_router import route_request
-
-from .ingestion import (
-    MAX_FILE_SIZE,
-    create_artifact,
-    decode_file_content,
-    is_binary_file,
-    is_supported,
-)
-
-from .artifact_parser import (
-    reconstruct_architecture,
-)
-from .ingestion_service import (
-    process_architecture_inputs,
-)
-from .conversation_router import route_request
-from backend.app.graph_engine import build_graph
-from backend.app.risk_engine import analyze_risks
-from backend.app.well_architected import score_well_architected
-from backend.app.scenario_lab import run_scenario
-from .assistant_executor import (
-    execute_assistant_intent,
-    AssistantExecutionError,
-)
-
-from .conversation_router import (
-    EngineeringIntent,
-)
-
-print("Imports OK")
-
+from .scenario_lab import run_scenario
+from .tool_layer import execute_approved_proposal
+from .verification_engine import verify_remediation
+from .well_architected import score_well_architected
 
 
 app = FastAPI(
     title="ArchGuard AI",
-    description="AI-powered software architecture risk analysis",
-    version="0.1.0",
+    description="AI-powered software architecture design, review and remediation",
+    version="0.2.0",
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 class Service(BaseModel):
     name: str
@@ -187,24 +56,17 @@ class ArchitectureInput(BaseModel):
     connections: list[list[str]]
 
 
-
-
 class VerificationRequest(BaseModel):
     before_findings: list[dict]
     after_findings: list[dict]
-
-    before_well_architected: dict = Field(
-        default_factory=dict
-    )
-
-    after_well_architected: dict = Field(
-        default_factory=dict
-    )
+    before_well_architected: dict = Field(default_factory=dict)
+    after_well_architected: dict = Field(default_factory=dict)
 
 
 class FailureRequest(BaseModel):
     architecture: ArchitectureInput
     component: str
+
 
 class ScenarioRequest(BaseModel):
     architecture: ArchitectureInput
@@ -212,901 +74,120 @@ class ScenarioRequest(BaseModel):
     target: Optional[str] = None
     traffic_multiplier: float = 1.0
 
+
 class OrchestratorRequest(BaseModel):
     artifacts: list[dict]
 
-class EmptyGeminiAnalysis:
-    findings = []
 
 class ParseRequest(BaseModel):
     content: str
     file_type: str
 
+
 class RemediationRequest(BaseModel):
     findings: list[dict]
+
 
 class AssistantRequest(BaseModel):
     prompt: str
     architecture: dict | None = None
     has_files: bool = False
 
-def architecture_to_dict(
-    architecture: ArchitectureInput,
-):
-    return architecture.model_dump()
 
 class ApprovalRequest(BaseModel):
     proposal_id: str
 
+
+class EmptyGeminiAnalysis:
+    findings = []
+
+
+def architecture_to_dict(architecture: ArchitectureInput) -> dict:
+    return architecture.model_dump()
+
+
 @app.get("/")
 def root():
-    return {
-        "name": "ArchGuard AI",
-        "status": "running",
-        "version": "0.1.0",
-    }
+    return {"name": "ArchGuard AI", "status": "running", "version": "0.2.0"}
 
 
 @app.get("/health")
 def health():
-    return {
-        "status": "healthy"
-    }
+    return {"status": "healthy"}
+
 
 @app.post("/ingest")
 async def ingest_architecture(
-    files: Optional[
-        List[UploadFile]
-    ] = File(
-        default=None
-    ),
-
-    manual_input:
-        Optional[str] = Form(
-            default=None
-        ),
+    files: Optional[List[UploadFile]] = File(default=None),
+    manual_input: Optional[str] = Form(default=None),
 ):
-
-    uploaded_files = (
-        files or []
-    )
-
-    has_manual_input = bool(
-        manual_input
-        and
-        manual_input.strip()
-    )
-
-
-    # -----------------------------------------------------
-    # 1. Validate request
-    # -----------------------------------------------------
-
-    if (
-        not uploaded_files
-        and
-        not has_manual_input
-    ):
-
-        raise HTTPException(
-            status_code=400,
-
-            detail=(
-                "Upload at least one file "
-                "or provide manual input."
-            ),
-        )
-
-
-    if (
-        len(uploaded_files)
-        > MAX_FILES
-    ):
-
-        raise HTTPException(
-            status_code=400,
-
-            detail=(
-                f"A maximum of "
-                f"{MAX_FILES} files "
-                f"can be analyzed at once."
-            ),
-        )
-
-
-    artifacts = []
-
-    unsupported_files = []
-
-
-    # -----------------------------------------------------
-    # 2. Process uploaded files
-    # -----------------------------------------------------
-
-    for uploaded_file in uploaded_files:
-
-        filename = (
-            uploaded_file.filename
-            or
-            "unnamed"
-        )
-
-
-        # -------------------------------------------------
-        # Unsupported extension
-        # -------------------------------------------------
-
-        if not is_supported(
-            filename
-        ):
-
-            unsupported_files.append(
-                filename
-            )
-
-            continue
-
-
-        # -------------------------------------------------
-        # Read uploaded bytes
-        # -------------------------------------------------
-
-        raw_content = (
-            await uploaded_file.read()
-        )
-
-
-        # -------------------------------------------------
-        # File-size protection
-        # -------------------------------------------------
-
-        if (
-            len(raw_content)
-            > MAX_FILE_SIZE
-        ):
-
-            raise HTTPException(
-                status_code=400,
-
-                detail=(
-                    f"{filename} exceeds "
-                    "the 5 MB limit."
-                ),
-            )
-
-
-        # -------------------------------------------------
-        # Binary files
-        #
-        # PNG
-        # JPG
-        # JPEG
-        # WEBP
-        # PDF
-        # -------------------------------------------------
-
-        if is_binary_file(
-            filename
-        ):
-
-            artifact = (
-                create_artifact(
-                    filename=filename,
-
-                    content=(
-                        raw_content
-                    ),
-                )
-            )
-
-
-        # -------------------------------------------------
-        # Text files
-        # -------------------------------------------------
-
-        else:
-
-            try:
-
-                text = (
-                    decode_file_content(
-                        raw_content,
-                        filename,
-                    )
-                )
-
-            except ValueError as error:
-
-                raise HTTPException(
-                    status_code=400,
-                    detail=str(
-                        error
-                    ),
-                )
-
-
-            artifact = (
-                create_artifact(
-                    filename=filename,
-
-                    content=text,
-                )
-            )
-
-
-        artifacts.append(
-            artifact
-        )
-
-
-    # -----------------------------------------------------
-    # 3. Optional manual input
-    # -----------------------------------------------------
-
-    if has_manual_input:
-
-        manual_text = (
-            manual_input.strip()
-        )
-
-        manual_artifact = (
-            create_artifact(
-                filename=(
-                    "manual-input.txt"
-                ),
-
-                content=(
-                    manual_text
-                ),
-
-                source="manual",
-            )
-        )
-
-        artifacts.append(
-            manual_artifact
-        )
-
-
-    # -----------------------------------------------------
-    # 4. Ensure at least one supported artifact exists
-    # -----------------------------------------------------
-
-    if not artifacts:
-
-        raise HTTPException(
-            status_code=400,
-
-            detail=(
-                "None of the provided "
-                "files are currently "
-                "supported."
-            ),
-        )
-
-
-    # -----------------------------------------------------
-    # 5. Separate deterministic and multimodal artifact
-    # -----------------------------------------------------
-
-    text_artifacts = [
-        artifact
-
-        for artifact
-        in artifacts
-
-        if artifact[
-            "file_type"
-        ]
-        not in {
-            "image",
-            "pdf",
-        }
-    ]
-
-
-    media_artifacts = [
-        artifact
-
-        for artifact
-        in artifacts
-
-        if artifact[
-            "file_type"
-        ]
-        in {
-            "image",
-            "pdf",
-        }
-    ]
-
-
-    # -----------------------------------------------------
-    # 6. Deterministic architecture reconstruction
-    # -----------------------------------------------------
-
-    if text_artifacts:
-
-        architecture = (
-            reconstruct_architecture(
-                text_artifacts
-            )
-        )
-
-    else:
-
-        architecture = {
-            "services": [],
-            "connections": [],
-        }
-
-
-    # -----------------------------------------------------
-    # 7. Gemini multimodal extraction
-    # -----------------------------------------------------
-
-    multimodal_architectures = []
-
-    multimodal_errors = []
-
-
-    mime_types = {
-        ".png":
-            "image/png",
-
-        ".jpg":
-            "image/jpeg",
-
-        ".jpeg":
-            "image/jpeg",
-
-        ".webp":
-            "image/webp",
-
-        ".pdf":
-            "application/pdf",
-    }
-
-
-    for artifact in media_artifacts:
-
-        filename = artifact[
-            "filename"
-        ]
-
-        extension = (
-            Path(
-                filename
-            )
-            .suffix
-            .lower()
-        )
-
-
-        mime_type = (
-            mime_types.get(
-                extension
-            )
-        )
-
-
-        if not mime_type:
-
-            continue
-
-
-        try:
-
-            extraction = (
-                extract_architecture_from_media(
-                    content=(
-                        artifact[
-                            "content"
-                        ]
-                    ),
-
-                    mime_type=(
-                        mime_type
-                    ),
-
-                    filename=(
-                        filename
-                    ),
-                )
-            )
-
-
-            multimodal_architecture = (
-                convert_multimodal_to_architecture(
-                    extraction=(
-                        extraction
-                    ),
-
-                    filename=(
-                        filename
-                    ),
-                )
-            )
-
-
-            multimodal_architectures.append(
-                multimodal_architecture
-            )
-
-
-        except Exception as error:
-
-            # We intentionally record the error
-            # instead of crashing the entire
-            # multi-file analysis.
-
-            multimodal_errors.append(
-                {
-                    "filename":
-                        filename,
-
-                    "error":
-                        str(
-                            error
-                        ),
-                }
-            )
-
-
-    # -----------------------------------------------------
-    # 8. Merge deterministic + multimodal architectures
-    # -----------------------------------------------------
-
-    service_map = {}
-
-
-    for service in architecture.get(
-        "services",
-        [],
-    ):
-
-        name = service.get(
-            "name"
-        )
-
-        if name:
-
-            service_map[
-                name
-            ] = service
-
-
-    connection_set = set()
-
-
-    for connection in architecture.get(
-        "connections",
-        [],
-    ):
-
-        if (
-            isinstance(
-                connection,
-                list,
-            )
-            and
-            len(
-                connection
-            ) == 2
-        ):
-
-            connection_set.add(
-                (
-                    connection[0],
-                    connection[1],
-                )
-            )
-
-
-    connection_evidence = []
-
-
-    multimodal_assumptions = []
-
-
-    for multimodal_architecture in (
-        multimodal_architectures
-    ):
-
-
-        # -------------------------------------------------
-        # Merge services
-        # -------------------------------------------------
-
-        for service in (
-            multimodal_architecture.get(
-                "services",
-                [],
-            )
-        ):
-
-            name = service.get(
-                "name"
-            )
-
-            if not name:
-                continue
-
-
-            if (
-                name
-                not in service_map
-            ):
-
-                service_map[
-                    name
-                ] = service
-
-
-            else:
-
-                existing = (
-                    service_map[
-                        name
-                    ]
-                )
-
-
-                existing.setdefault(
-                    "evidence",
-                    [],
-                )
-
-
-                existing[
-                    "evidence"
-                ].extend(
-                    service.get(
-                        "evidence",
-                        [],
-                    )
-                )
-
-
-                incoming_confidence = (
-                    service.get(
-                        "confidence",
-                        0.0,
-                    )
-                )
-
-
-                existing_confidence = (
-                    existing.get(
-                        "confidence",
-                        0.0,
-                    )
-                )
-
-
-                if (
-                    incoming_confidence
-                    >
-                    existing_confidence
-                ):
-
-                    existing[
-                        "confidence"
-                    ] = (
-                        incoming_confidence
-                    )
-
-
-        # -------------------------------------------------
-        # Merge connections
-        # -------------------------------------------------
-
-        for connection in (
-            multimodal_architecture.get(
-                "connections",
-                [],
-            )
-        ):
-
-            if (
-                isinstance(
-                    connection,
-                    list,
-                )
-                and
-                len(
-                    connection
-                ) == 2
-            ):
-
-                connection_set.add(
-                    (
-                        connection[0],
-                        connection[1],
-                    )
-                )
-
-
-        # -------------------------------------------------
-        # Preserve connection evidence
-        # -------------------------------------------------
-
-        connection_evidence.extend(
-            multimodal_architecture.get(
-                "connection_evidence",
-                [],
-            )
-        )
-
-
-        # -------------------------------------------------
-        # Preserve Gemini assumptions
-        # -------------------------------------------------
-
-        multimodal_assumptions.extend(
-            multimodal_architecture.get(
-                "assumptions",
-                [],
-            )
-        )
-
-
-    # -----------------------------------------------------
-    # 9. Final canonical architecture
-    # -----------------------------------------------------
-
-    architecture[
-        "services"
-    ] = list(
-        service_map.values()
-    )
-
-
-    architecture[
-        "connections"
-    ] = [
-        [
-            source,
-            target,
-        ]
-
-        for (
-            source,
-            target
-        )
-        in sorted(
-            connection_set
-        )
-    ]
-
-
-    architecture[
-        "connection_evidence"
-    ] = (
-        connection_evidence
-    )
-
-
-    architecture[
-        "assumptions"
-    ] = (
-        multimodal_assumptions
-    )
-    architecture = (
-    enrich_architecture_with_evidence(
-        architecture
-    )
-)
-    digital_twin = (
-        build_architecture_digital_twin(
-            architecture
-        )
-    )
-
-
-    # -----------------------------------------------------
-    # 10. Was architecture actually detected?
-    # -----------------------------------------------------
-
-    architecture_detected = bool(
-        architecture.get(
-            "services"
-        )
-        or
-        architecture.get(
-            "connections"
-        )
-    )
-
-
-    # -----------------------------------------------------
-    # 11. Response metadata
-    # -----------------------------------------------------
-
-    artifact_metadata = [
+    if not files and not (manual_input and manual_input.strip()):
+        raise HTTPException(400, "Upload at least one file or provide manual input.")
+
+    try:
+        result = await process_architecture_inputs(files or [], manual_input)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, f"Artifact ingestion failed: {exc}") from exc
+
+    artifacts = [
         {
-            "filename":
-                artifact[
-                    "filename"
-                ],
-
-            "file_type":
-                artifact[
-                    "file_type"
-                ],
-
-            "source":
-                artifact[
-                    "source"
-                ],
-
-            "size":
-                artifact[
-                    "size"
-                ],
+            "filename": item.get("filename"),
+            "mode": item.get("mode"),
+            "success": item.get("success"),
+            "error": item.get("error"),
         }
-
-        for artifact
-        in artifacts
+        for item in result.get("processed_files", [])
     ]
 
-    # Build AI Agent execution plan
-    execution_plan = summarize_plan(
-        build_execution_plan(artifact_metadata)
-    )
-
-
-    # -----------------------------------------------------
-    # 12. Return ingestion response
-    # -----------------------------------------------------
-
-    return {
-        "status":
-            "success",
-
-        "artifact_count":
-            len(
-                artifacts
-            ),
-
-        "artifacts":
-            artifact_metadata,
-
-        "unsupported_files":
-            unsupported_files,
-
-        "architecture":
-            architecture,
-
-        "digital_twin":
-            digital_twin,
-
-        "architecture_detected":
-            architecture_detected,
-
-        "multimodal_enabled":
-            True,
-
-        "multimodal_files_received":
-            len(
-                media_artifacts
-            ),
-
-        "multimodal_files_analyzed":
-            len(
-                multimodal_architectures
-            ),
-
-        "multimodal_errors":
-            multimodal_errors,
-
-        "execution_plan": execution_plan,
-
-        "message":
-            (
-                "Artifacts ingested and "
-                "architecture reconstruction "
-                "completed."
-                "Digital Twin created."
-            ),
-    }
-
-@app.post("/orchestrate")
-def orchestrate(request: OrchestratorRequest):
-
-    plan = build_execution_plan(request.artifacts)
+    plan = summarize_plan(build_execution_plan(artifacts)) if artifacts else []
+    multimodal = result.get("multimodal", {})
 
     return {
         "status": "success",
-        "agent": "ArchGuard Orchestrator",
-        "execution_plan": summarize_plan(plan)
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts,
+        "architecture": result.get("architecture"),
+        "digital_twin": result.get("digital_twin"),
+        "architecture_detected": result.get("architecture_detected", False),
+        "multimodal_enabled": True,
+        "multimodal_files_received": multimodal.get("attempted", 0),
+        "multimodal_errors": multimodal.get("errors", []),
+        "execution_plan": plan,
+        "message": "Artifacts ingested and architecture digital twin reconstructed.",
     }
 
+
+@app.post("/orchestrate")
+def orchestrate(request: OrchestratorRequest):
+    return {
+        "status": "success",
+        "agent": "ArchGuard Orchestrator",
+        "execution_plan": summarize_plan(build_execution_plan(request.artifacts)),
+    }
+
+
 @app.post("/analyze")
-def analyze(
-    architecture: ArchitectureInput,
-):
-    architecture_dict = architecture_to_dict(
-        architecture
-    )
+def analyze(architecture: ArchitectureInput):
+    architecture_dict = architecture_to_dict(architecture)
+    graph = build_architecture_graph(architecture_dict)
+    rule_findings = analyze_architecture(architecture_dict)
+    graph_findings = analyze_graph_risks(graph)
 
-    graph = build_architecture_graph(
-        architecture_dict
-    )
-
-    # Deterministic rules
-    rule_findings = analyze_architecture(
-        architecture_dict
-    )
-
-    # Graph analysis
-    graph_findings = analyze_graph_risks(
-        graph
-    )
-
-    # Gemini is useful, but ArchGuard must still work
-    # when the model is temporarily unavailable.
     gemini_available = True
-
     try:
-        gemini_analysis = analyze_with_gemini(
-            architecture_dict
-        )
-
-    except Exception as error:
+        gemini_analysis = analyze_with_gemini(architecture_dict)
+    except Exception:
         gemini_available = False
-
-        print(
-            f"Gemini temporarily unavailable: {error}"
-        )
-
         gemini_analysis = EmptyGeminiAnalysis()
 
-    # Normalize rule + Gemini findings
-    all_findings = aggregate_findings(
-        rule_findings,
-        gemini_analysis,
-    )
-    retrieved_knowledge = (
-        retrieve_for_architecture(
-            architecture_dict,
-            limit=4,
-        )
-    )
-
-    # Graph findings already use our Finding model.
-    all_findings.extend(
-        graph_findings
-    )
-
-   # Score
-    scored_findings = assign_risk_scores(
-        all_findings
-    )
-
-    # Deduplicate
-    unique_findings = deduplicate_findings(
-        scored_findings
-    )
-
-    # Google Well-Architected scoring
-    well_architected = score_well_architected(
-        [
-            finding.model_dump()
-            for finding in unique_findings
-        ]
-    )
-
-    # Highest risk first
-    ranked_findings = sorted(
-        unique_findings,
-        key=lambda finding: finding.risk_score,
-        reverse=True,
-    )
-
-    critical_components = (
-        get_critical_components(graph)
-    )
+    all_findings = aggregate_findings(rule_findings, gemini_analysis)
+    all_findings.extend(graph_findings)
+    scored = assign_risk_scores(all_findings)
+    unique = deduplicate_findings(scored)
+    ranked = sorted(unique, key=lambda item: item.risk_score, reverse=True)
+    finding_dicts = [item.model_dump() for item in ranked]
 
     return {
         "status": "success",
@@ -1115,625 +196,272 @@ def analyze(
             "component_count": graph.number_of_nodes(),
             "connection_count": graph.number_of_edges(),
         },
-        "critical_components": critical_components,
-        "knowledge_sources": retrieved_knowledge,
-        "well_architected": well_architected,
-        "findings": [
-            finding.model_dump()
-            for finding in ranked_findings
-        ],
+        "critical_components": get_critical_components(graph),
+        "knowledge_sources": retrieve_for_architecture(architecture_dict, limit=4),
+        "well_architected": score_well_architected(finding_dicts),
+        "findings": finding_dicts,
     }
+
 
 @app.post("/remediation-plan")
-def remediation_plan(
-    request: RemediationRequest,
-):
-
+def remediation_plan(request: RemediationRequest):
     if not request.findings:
-
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "At least one finding "
-                "is required."
-            ),
-        )
-
-    plan = (
-        build_remediation_plan(
-            request.findings
-        )
-    )
-
-    register_proposals(
-        plan["proposals"]
-)
-
+        raise HTTPException(400, "At least one finding is required.")
+    plan = build_remediation_plan(request.findings)
+    register_proposals(plan["proposals"])
     return plan
 
-@app.get(
-    "/remediation/{proposal_id}/diff"
-)
-def remediation_diff(
-    proposal_id: str,
-):
 
-    proposal = get_proposal(
-        proposal_id
-    )
-
+@app.get("/remediation/{proposal_id}/diff")
+def remediation_diff(proposal_id: str):
+    proposal = get_proposal(proposal_id)
     if not proposal:
-
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Remediation proposal "
-                "not found."
-            ),
-        )
-
-    proposed_diff = (
-        generate_proposed_diff(
-            proposal
-        )
-    )
-
+        raise HTTPException(404, "Remediation proposal not found.")
     return {
-        "status":
-            "success",
-
-        "proposal_id":
-            proposal_id,
-
-        "approval_status":
-            proposal.get(
-                "approval_status"
-            ),
-
-        "execution_allowed":
-            False,
-
-        "proposed_diff":
-            proposed_diff,
-
-        "safety":
-            (
-                "Preview only. "
-                "Nothing has been executed."
-            ),
+        "status": "success",
+        "proposal_id": proposal_id,
+        "approval_status": proposal.get("approval_status"),
+        "execution_allowed": False,
+        "proposed_diff": generate_proposed_diff(proposal),
+        "safety": "Preview only. Nothing has been executed.",
     }
 
-    @app.post(
-    "/remediation/approve"
-)
-    def approve_remediation(
-        request: ApprovalRequest,
-    ):
 
-        try:
+@app.post("/remediation/approve")
+def approve_remediation(request: ApprovalRequest):
+    try:
+        proposal = approve_proposal(request.proposal_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {
+        "status": "success",
+        "proposal_id": request.proposal_id,
+        "approval_status": proposal["approval_status"],
+        "approved": proposal["approved"],
+        "execution_allowed": False,
+        "message": "Proposal approved. Production execution remains disabled.",
+    }
 
-            proposal = (
-                approve_proposal(
-                    request.proposal_id
-                )
-            )
 
-        except ValueError as error:
+@app.post("/remediation/reject")
+def reject_remediation(request: ApprovalRequest):
+    try:
+        proposal = reject_proposal(request.proposal_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {
+        "status": "success",
+        "proposal_id": request.proposal_id,
+        "approval_status": proposal["approval_status"],
+        "approved": False,
+        "execution_allowed": False,
+        "message": "Proposal rejected.",
+    }
 
-            raise HTTPException(
-                status_code=404,
-                detail=str(error),
-            )
 
-        return {
-            "status":
-                "success",
-
-            "proposal_id":
-                request.proposal_id,
-
-            "approval_status":
-                proposal[
-                    "approval_status"
-                ],
-
-            "approved":
-                proposal[
-                    "approved"
-                ],
-
-            "execution_allowed":
-                False,
-
-            "message":
-                (
-                    "Proposal approved for review workflow. "
-                    "Execution remains disabled."
-                ),
-        }
-        @app.post(
-        "/remediation/reject"
-    )
-        def reject_remediation(
-            request: ApprovalRequest,
-        ):
-
-            try:
-
-                proposal = (
-                    reject_proposal(
-                        request.proposal_id
-                    )
-                )
-
-            except ValueError as error:
-
-                raise HTTPException(
-                    status_code=404,
-                    detail=str(error),
-                )
-
-            return {
-                "status":
-                    "success",
-
-                "proposal_id":
-                    request.proposal_id,
-
-                "approval_status":
-                    proposal[
-                        "approval_status"
-                    ],
-
-                "approved":
-                    False,
-
-                "execution_allowed":
-                    False,
-
-                "message":
-                    "Proposal rejected.",
-            }
-
-@app.post(
-    "/remediation/{proposal_id}/execute-sandbox"
-)
-def execute_remediation_sandbox(
-    proposal_id: str,
-):
-
-    proposal = get_proposal(
-        proposal_id
-    )
-
+@app.post("/remediation/{proposal_id}/execute-sandbox")
+def execute_remediation_sandbox(proposal_id: str):
+    proposal = get_proposal(proposal_id)
     if not proposal:
-
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Remediation proposal "
-                "not found."
-            ),
-        )
-
-    if (
-        proposal.get(
-            "approval_status"
-        )
-        !=
-        "approved"
-    ):
-
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Human approval is required "
-                "before sandbox execution."
-            ),
-        )
-
-    result = (
-        execute_approved_proposal(
-            proposal
-        )
-    )
-
-    if not result[
-        "success"
-    ]:
-
-        raise HTTPException(
-            status_code=400,
-            detail=result,
-        )
-
+        raise HTTPException(404, "Remediation proposal not found.")
+    if proposal.get("approval_status") != "approved":
+        raise HTTPException(403, "Human approval is required before sandbox execution.")
+    result = execute_approved_proposal(proposal)
+    if not result.get("success"):
+        raise HTTPException(400, detail=result)
     return result
+
 
 @app.post("/simulate-failure")
-def simulate_failure(
-    request: FailureRequest,
-):
-    architecture_dict = (
-    architecture_to_dict(
-        request.architecture
-    )
-)
-
-    architecture_dict = normalize_architecture(
-        architecture_dict
-    )
-
-    graph = build_architecture_graph(
-        architecture_dict
-    )
-
-    scenario = simulate_component_failure(
-        graph,
-        request.component,
-    )
-
-    if not scenario["success"]:
-        raise HTTPException(
-            status_code=404,
-            detail=scenario["message"],
-        )
-
+def simulate_failure(request: FailureRequest):
+    architecture_dict = normalize_architecture(architecture_to_dict(request.architecture))
+    graph = build_architecture_graph(architecture_dict)
+    scenario = simulate_component_failure(graph, request.component)
+    if not scenario.get("success"):
+        raise HTTPException(404, scenario.get("message", "Simulation failed"))
     return scenario
 
+
 @app.post("/scenario")
-def run_architecture_scenario(
-    request: ScenarioRequest,
-):
-
-    architecture_dict = (
-        architecture_to_dict(
-            request.architecture
-        )
-    )
-
-    architecture_dict = (
-        normalize_architecture(
-            architecture_dict
-        )
-    )
-
-    graph = (
-        build_architecture_graph(
-            architecture_dict
-        )
-    )
-
+def run_architecture_scenario(request: ScenarioRequest):
+    architecture_dict = normalize_architecture(architecture_to_dict(request.architecture))
+    graph = build_architecture_graph(architecture_dict)
     result = run_scenario(
         graph=graph,
-        scenario_type=(
-            request.scenario_type
-        ),
-        target=(
-            request.target
-        ),
-        traffic_multiplier=(
-            request.traffic_multiplier
-        ),
+        scenario_type=request.scenario_type,
+        target=request.target,
+        traffic_multiplier=request.traffic_multiplier,
     )
-
-    if not result.get(
-        "success"
-    ):
-
-        raise HTTPException(
-            status_code=400,
-            detail=result,
-        )
-
+    if not result.get("success"):
+        raise HTTPException(400, detail=result)
     return result
 
+
 @app.post("/parse")
-def parse_architecture(
-    request: ParseRequest,
-):
+def parse_architecture(request: ParseRequest):
     try:
-        architecture = parse_architecture_text(
-            request.content,
-            request.file_type,
-        )
+        architecture = parse_architecture_text(request.content, request.file_type)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"status": "success", "architecture": architecture}
 
-    except Exception as error:
-        raise HTTPException(
-            status_code=400,
-            detail=str(error),
-        )
-
-    return {
-        "status": "success",
-        "architecture": architecture,
-    }
 
 @app.post("/verify-remediation")
-def verify_remediation_endpoint(
-    request: VerificationRequest,
-):
-    """
-    Compare architecture risk before and after
-    an approved remediation.
+def verify_remediation_endpoint(request: VerificationRequest):
+    return {
+        "status": "success",
+        "verification": verify_remediation(
+            before_findings=request.before_findings,
+            after_findings=request.after_findings,
+            before_well_architected=request.before_well_architected,
+            after_well_architected=request.after_well_architected,
+        ),
+    }
 
-    This endpoint performs deterministic
-    verification only. It does not modify
-    infrastructure or call external systems.
-    """
 
-    result = verify_remediation(
-        before_findings=(
-            request.before_findings
-        ),
-        after_findings=(
-            request.after_findings
-        ),
-        before_well_architected=(
-            request.before_well_architected
-        ),
-        after_well_architected=(
-            request.after_well_architected
-        ),
+@app.post("/assistant")
+def architecture_assistant(request: AssistantRequest):
+    prompt = request.prompt.strip()
+    if not prompt:
+        raise HTTPException(400, "Prompt cannot be empty.")
+
+    routing = route_request(
+        prompt=prompt,
+        has_architecture=bool(request.architecture),
+        has_files=request.has_files,
     )
+    intent = EngineeringIntent(routing["intent"])
+
+    # DESIGN and general QUESTION can start before an architecture exists.
+    if intent in {EngineeringIntent.DESIGN, EngineeringIntent.QUESTION}:
+        try:
+            result = generate_assistant_response(
+                client=get_gemini_client(),
+                model_name="gemini-3.6-flash",
+                prompt=prompt,
+                intent=intent,
+                architecture=request.architecture,
+            )
+            return {
+                "status": "success",
+                "mode": "conversation",
+                "routing": routing,
+                "execution": {"started": True, "engine": "gemini_architecture_reasoning"},
+                "assistant": result,
+            }
+        except Exception as exc:
+            raise HTTPException(503, f"ArchGuard reasoning is temporarily unavailable: {exc}") from exc
+
+    try:
+        result = execute_assistant_intent(intent, prompt, request.architecture)
+    except AssistantExecutionError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     return {
         "status": "success",
-        "verification": result,
+        "mode": "conversation",
+        "routing": routing,
+        "execution": {"started": True, "result": result},
     }
-@app.post("/assistant")
-def architecture_assistant(
-    request: AssistantRequest,
-):
-    prompt = request.prompt.strip()
-
-    if not prompt:
-        raise HTTPException(
-            status_code=400,
-            detail="Prompt cannot be empty.",
-        )
-
-    has_architecture = bool(
-        request.architecture
-    )
-
-    routing = route_request(
-        prompt=prompt,
-        has_architecture=has_architecture,
-        has_files=request.has_files,
-    )
-
-    intent = EngineeringIntent(
-        routing["intent"]
-    )
-
-    # For now, only DESIGN and QUESTION
-    # execute conversational Gemini reasoning.
-    if intent not in {
-        EngineeringIntent.DESIGN,
-        EngineeringIntent.QUESTION,
-    }:
-        return {
-            "status": "success",
-            "mode": "conversation",
-            "routing": routing,
-            "execution": {
-                "started": False,
-                "reason": (
-                    "This intent will be connected "
-                    "to its specialized ArchGuard "
-                    "engine in the next step."
-                ),
-            },
-        }
-
-    try:
-        client = get_gemini_client()
-
-        result = generate_assistant_response(
-            client=client,
-            model_name="gemini-3.6-flash",
-            prompt=prompt,
-            intent=intent,
-            architecture=request.architecture,
-        )
-
-        return {
-            "status": "success",
-            "mode": "conversation",
-            "routing": routing,
-            "execution": {
-                "started": True,
-                "engine": "gemini_architecture_reasoning",
-            },
-            "assistant": result,
-        }
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "ArchGuard conversational reasoning failed: "
-                f"{str(exc)}"
-            ),
-        )
 
 
-  @app.post("/assistant/input")
+@app.post("/assistant/input")
 async def assistant_input(
     prompt: str = Form(...),
-    files: Optional[List[UploadFile]] = File(None),
-    manual_input: Optional[str] = Form(None),
+    files: Optional[List[UploadFile]] = File(default=None),
+    manual_input: Optional[str] = Form(default=None),
 ):
-    """
-    Unified conversational entry point for ArchGuard.
-
-    The user can provide:
-    - a natural-language engineering prompt
-    - architecture / engineering artifacts
-    - pasted architecture or stakeholder context
-    - any combination of the above
-
-    Uploaded artifacts are processed through
-    ArchGuard's shared ingestion pipeline.
-    """
-
     prompt = prompt.strip()
-
     if not prompt:
-        raise HTTPException(
-            status_code=400,
-            detail="Prompt cannot be empty.",
-        )
-
-    uploaded_files = files or []
-
-    # ------------------------------------------
-    # STEP 1
-    # Understand user-provided artifacts
-    # ------------------------------------------
+        raise HTTPException(400, "Prompt cannot be empty.")
 
     try:
-        ingestion = (
-            await process_architecture_inputs(
-                uploaded_files=uploaded_files,
-                manual_input=manual_input,
-            )
-        )
-
+        ingestion = await process_architecture_inputs(files or [], manual_input)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "ArchGuard could not process "
-                f"the supplied artifacts: {str(exc)}"
-            ),
-        )
+        raise HTTPException(500, f"ArchGuard could not process supplied artifacts: {exc}") from exc
 
-    architecture = ingestion.get(
-        "architecture"
-    )
-
-    # ------------------------------------------
-    # STEP 2
-    # Determine engineering intent
-    # ------------------------------------------
-
+    architecture = ingestion.get("architecture")
     routing = route_request(
         prompt=prompt,
-        has_architecture=bool(
-            architecture
-        ),
-        has_files=bool(
-            uploaded_files
-        ),
+        has_architecture=bool(architecture),
+        has_files=bool(files),
     )
+    intent = EngineeringIntent(routing["intent"])
 
-    # ------------------------------------------
-    # STEP 3
-    # Build ArchGuard context
-    # ------------------------------------------
+    try:
+        execution_result = execute_assistant_intent(intent, prompt, architecture)
+    except AssistantExecutionError as exc:
+        execution_result = {"status": "blocked", "error": str(exc)}
+    except Exception as exc:
+        execution_result = {"status": "error", "error": str(exc)}
+
+    synthesis_status = "skipped"
+    synthesis_error = None
+    answer = None
+
+    # DESIGN/QUESTION need model reasoning even without a pre-existing architecture.
+    if intent in {EngineeringIntent.DESIGN, EngineeringIntent.QUESTION}:
+        try:
+            generated = generate_assistant_response(
+                client=get_gemini_client(),
+                model_name="gemini-3.6-flash",
+                prompt=prompt,
+                intent=intent,
+                architecture=architecture,
+            )
+            answer = generated.get("response", "")
+            synthesis_status = "success"
+        except Exception as exc:
+            synthesis_status = "error"
+            synthesis_error = str(exc)
+            answer = "The AI design/reasoning layer is temporarily unavailable."
+
+    elif execution_result.get("status") not in {"blocked", "error"}:
+        try:
+            answer = synthesize_assistant_response(
+                client=get_gemini_client(),
+                model_name="gemini-3.6-flash",
+                user_prompt=prompt,
+                intent=intent.value,
+                architecture=architecture,
+                execution_result=execution_result,
+            )
+            synthesis_status = "success"
+        except Exception as exc:
+            synthesis_status = "error"
+            synthesis_error = str(exc)
+            answer = (
+                "ArchGuard completed local analysis, but the AI explanation layer "
+                "is temporarily unavailable. Structured results are still included."
+            )
+    else:
+        answer = (
+            "ArchGuard could not run the requested architecture analysis with the "
+            "supplied context. See the execution result for details."
+        )
 
     context = {
         "prompt": prompt,
-
-        "architecture_detected":
-            ingestion.get(
-                "architecture_detected",
-                False,
-            ),
-
-        "architecture":
-            architecture,
-
-        "digital_twin":
-            ingestion.get(
-                "digital_twin"
-            ),
-
-        "processed_files":
-            ingestion.get(
-                "processed_files",
-                [],
-            ),
-
-        "multimodal":
-            ingestion.get(
-                "multimodal",
-                {},
-            ),
-
-        "manual_input_provided":
-            bool(
-                manual_input
-                and manual_input.strip()
-            ),
+        "architecture_detected": ingestion.get("architecture_detected", False),
+        "architecture": architecture,
+        "digital_twin": ingestion.get("digital_twin"),
+        "processed_files": ingestion.get("processed_files", []),
+        "multimodal": ingestion.get("multimodal", {}),
+        "manual_input_provided": bool(manual_input and manual_input.strip()),
     }
-
-    # ------------------------------------------
-    # STEP 4
-    # Return current understanding
-    #
-    # Specialized engines are deliberately
-    # NOT executed yet.
-    # ------------------------------------------
-
-        # ------------------------------------------
-    # STEP 4
-    # Execute appropriate ArchGuard capability
-    # ------------------------------------------
-
-    intent_value = routing.get(
-        "intent"
-    )
-
-    try:
-
-        intent = EngineeringIntent(
-            intent_value
-        )
-
-        execution_result = (
-            execute_assistant_intent(
-                intent=intent,
-                prompt=prompt,
-                architecture=architecture,
-            )
-        )
-
-    except AssistantExecutionError as exc:
-
-        execution_result = {
-            "status": "blocked",
-            "error": str(exc),
-        }
-
-    except Exception as exc:
-
-        execution_result = {
-            "status": "error",
-            "error": str(exc),
-        }
-
-    # ------------------------------------------
-    # STEP 5
-    # Return unified ArchGuard response
-    # ------------------------------------------
 
     return {
         "status": "success",
-
-        "mode":
-            "conversational_architecture",
-
-        "routing":
-            routing,
-
-        "context":
-            context,
-
-        "execution": {
-            "started": True,
-            "result":
-                execution_result,
+        "mode": "conversational_architecture",
+        "answer": answer,
+        "routing": routing,
+        "context": context,
+        "execution": {"started": True, "result": execution_result},
+        "synthesis": {
+            "status": synthesis_status,
+            "model": "gemini-3.6-flash" if synthesis_status == "success" else None,
+            "error": synthesis_error,
         },
     }
