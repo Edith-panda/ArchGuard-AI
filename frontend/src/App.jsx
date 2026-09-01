@@ -1,1745 +1,220 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import ArchitectureGraph from "./components/ArchitectureGraph";
-import {
-  Background,
-  Controls,
-  ReactFlow,
-} from "@xyflow/react";
-
-import "@xyflow/react/dist/style.css";
+import FileDropZone from "./components/FileDropZone";
 import "./App.css";
 
-import FileDropZone from "./components/FileDropZone";
+const API_BASE = "http://127.0.0.1:8000";
 
-
-const SAMPLE_ARCHITECTURE = {
-  services: [
-    {
-      name: "API Gateway",
-      type: "gateway",
-    },
-    {
-      name: "Order Service",
-      type: "microservice",
-    },
-    {
-      name: "Payment Service",
-      type: "microservice",
-    },
-    {
-      name: "PostgreSQL",
-      type: "database",
-    },
-  ],
-
-  connections: [
-    ["API Gateway", "Order Service"],
-    ["Order Service", "Payment Service"],
-    ["Order Service", "PostgreSQL"],
-    ["Payment Service", "PostgreSQL"],
-  ],
-};
-
+const SUGGESTIONS = [
+  "Design an e-commerce platform for 10M users",
+  "Review my architecture and find the biggest risks",
+  "What happens if the database goes down?",
+  "Stakeholders expect 20x traffic. What should change?",
+];
 
 function App() {
-  const [architectureText, setArchitectureText] =
-    useState("");
+  const [prompt, setPrompt] = useState("");
+  const [files, setFiles] = useState([]);
+  const [manualInput, setManualInput] = useState("");
+  const [showArtifacts, setShowArtifacts] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [activeTab, setActiveTab] = useState("architecture");
 
-  const [architecture, setArchitecture] =
-    useState(SAMPLE_ARCHITECTURE);
+  const digitalTwin = result?.context?.digital_twin;
+  const execution = result?.execution?.result || {};
+  const findings = execution?.findings || [];
+  const waf = execution?.well_architected || {};
+  const intent = result?.routing?.intent || "ready";
 
-  const [analysis, setAnalysis] =
-    useState(null);
-
-  const [ingestionResult, setIngestionResult] =
-  useState(null);
-
-  const [loading, setLoading] =
-    useState(false);
-
-  const [error, setError] =
-    useState("");
-
-  const [files, setFiles] =
-    useState([]);
-
-  const [
-    showManualInput,
-    setShowManualInput,
-  ] = useState(false);
-
-
-  const nodes = useMemo(() => {
-    return architecture.services.map(
-      (service, index) => ({
-        id: service.name,
-
-        data: {
-          label:
-            `${service.name}\n(${service.type})`,
-        },
-
-        position: {
-          x: (index % 2) * 300,
-          y:
-            Math.floor(index / 2)
-            * 180,
-        },
-      })
-    );
-  }, [architecture]);
-
-
-  const edges = useMemo(() => {
-    return architecture.connections.map(
-      (
-        [source, destination],
-        index
-      ) => ({
-        id: `edge-${index}`,
-        source,
-        target: destination,
-        animated: true,
-      })
-    );
-  }, [architecture]);
-
-  const [
-  remediationPlan,
-  setRemediationPlan,
-] = useState(null);
-
-  const [
-  proposedDiffs,
-  setProposedDiffs,
-] = useState({});
-
-const [
-  approvalStatuses,
-  setApprovalStatuses,
-] = useState({});
-
-  async function generateRemediationPlan() {
-
-    if (!analysis?.findings?.length) {
+  async function askArchGuard(event) {
+    event?.preventDefault();
+    const question = prompt.trim();
+    if (!question) {
+      setError("Ask ArchGuard a question or describe what you want to build.");
       return;
     }
 
+    setLoading(true);
+    setError("");
+    setMessages((current) => [...current, { role: "user", text: question }]);
+
     try {
+      const formData = new FormData();
+      formData.append("prompt", question);
+      files.forEach((file) => formData.append("files", file));
+      if (manualInput.trim()) formData.append("manual_input", manualInput.trim());
 
-      const response =
-        await fetch(
-          "http://127.0.0.1:8000/remediation-plan",
-          {
-            method: "POST",
-
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
-
-            body: JSON.stringify({
-              findings:
-                analysis.findings,
-            }),
-          }
-        );
-
-
-      const data =
-        await response.json();
-
-
+      const response = await fetch(`${API_BASE}/assistant/input`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await response.json();
       if (!response.ok) {
-
-        throw new Error(
-          data.detail ||
-          "Failed to generate remediation plan."
-        );
-
+        throw new Error(typeof data.detail === "string" ? data.detail : "ArchGuard could not process the request.");
       }
 
-
-      setRemediationPlan(
-        data
-      );
-
+      setResult(data);
+      setMessages((current) => [
+        ...current,
+        { role: "assistant", text: data.answer || "Analysis completed. Explore the architecture and evidence panel." },
+      ]);
+      setPrompt("");
     } catch (err) {
-
-      setError(
-        err.message
-      );
-
+      setError(err.message || "Something went wrong while contacting ArchGuard.");
+    } finally {
+      setLoading(false);
     }
   }
 
-  const [
-  executionResults,
-  setExecutionResults,
-] = useState({});
-
-  async function executeInSandbox(
-  proposalId
-) {
-
-  try {
-
+  function resetWorkspace() {
+    setPrompt("");
+    setFiles([]);
+    setManualInput("");
+    setMessages([]);
+    setResult(null);
     setError("");
-
-    const response =
-      await fetch(
-        `http://127.0.0.1:8000/remediation/${proposalId}/execute-sandbox`,
-        {
-          method: "POST",
-        }
-      );
-
-    const data =
-      await response.json();
-
-    if (!response.ok) {
-
-      const message =
-        typeof data.detail ===
-        "string"
-          ? data.detail
-          : data.detail?.message ||
-            "Sandbox execution failed.";
-
-      throw new Error(
-        message
-      );
-    }
-
-    setExecutionResults(
-      (current) => ({
-        ...current,
-        [proposalId]: data,
-      })
-    );
-
-  } catch (err) {
-
-    setError(
-      err.message ||
-      "Sandbox execution failed."
-    );
-
+    setShowArtifacts(false);
   }
-}
-
-  async function loadProposedDiff(
-  proposalId
-) {
-
-  try {
-
-    const response =
-      await fetch(
-        `http://127.0.0.1:8000/remediation/${proposalId}/diff`
-      );
-
-    const data =
-      await response.json();
-
-    if (!response.ok) {
-      throw new Error(
-        data.detail ||
-        "Failed to load proposed diff."
-      );
-    }
-
-    setProposedDiffs(
-      (current) => ({
-        ...current,
-        [proposalId]:
-          data.proposed_diff,
-      })
-    );
-
-  } catch (err) {
-
-    setError(
-      err.message
-    );
-
-  }
-}
-
-async function approveProposal(
-  proposalId
-) {
-
-  const response =
-    await fetch(
-      "http://127.0.0.1:8000/remediation/approve",
-      {
-        method: "POST",
-
-        headers: {
-          "Content-Type":
-            "application/json",
-        },
-
-        body: JSON.stringify({
-          proposal_id:
-            proposalId,
-        }),
-      }
-    );
-
-
-  const data =
-    await response.json();
-
-
-  if (!response.ok) {
-
-    setError(
-      data.detail ||
-      "Approval failed."
-    );
-
-    return;
-  }
-
-
-  setApprovalStatuses(
-    (current) => ({
-      ...current,
-      [proposalId]:
-        "approved",
-    })
-  );
-}
-
-async function rejectProposal(
-  proposalId
-) {
-
-  const response =
-    await fetch(
-      "http://127.0.0.1:8000/remediation/reject",
-      {
-        method: "POST",
-
-        headers: {
-          "Content-Type":
-            "application/json",
-        },
-
-        body: JSON.stringify({
-          proposal_id:
-            proposalId,
-        }),
-      }
-    );
-
-
-  const data =
-    await response.json();
-
-
-  if (!response.ok) {
-
-    setError(
-      data.detail ||
-      "Rejection failed."
-    );
-
-    return;
-  }
-
-
-  setApprovalStatuses(
-    (current) => ({
-      ...current,
-      [proposalId]:
-        "rejected",
-    })
-  );
-}
-
-async function executeInSandbox(
-  proposalId
-) {
-  try {
-    setError("");
-
-    const response =
-      await fetch(
-        `http://127.0.0.1:8000/remediation/${proposalId}/execute-sandbox`,
-        {
-          method: "POST",
-        }
-      );
-
-    const data =
-      await response.json();
-
-    if (!response.ok) {
-      const message =
-        typeof data.detail === "string"
-          ? data.detail
-          : data.detail?.message ||
-            "Sandbox execution failed.";
-
-      throw new Error(message);
-    }
-
-    setExecutionResults(
-      (current) => ({
-        ...current,
-        [proposalId]: data,
-      })
-    );
-
-  } catch (err) {
-    setError(
-      err.message ||
-      "Sandbox execution failed."
-    );
-  }
-}
-
-
- async function analyzeArchitecture() {
-  setLoading(true);
-  setError("");
-  setAnalysis(null);
-  setIngestionResult(null);
-  setRemediationPlan(null);
-  setProposedDiffs({});
-  setApprovalStatuses({});
-  setExecutionResults({});
-
-  const hasFiles =
-    files.length > 0;
-
-  const hasManualInput =
-    architectureText
-      .trim()
-      .length > 0;
-
-  if (
-    !hasFiles &&
-    !hasManualInput
-  ) {
-    setError(
-      "Please upload at least one file or paste architecture content."
-    );
-
-    setLoading(false);
-
-    return;
-  }
-
-  try {
-
-    /*
-     * STEP 1
-     *
-     * Send every artifact to the
-     * ArchGuard ingestion pipeline.
-     */
-
-    const formData =
-      new FormData();
-
-    files.forEach((file) => {
-      formData.append(
-        "files",
-        file
-      );
-    });
-
-    if (hasManualInput) {
-      formData.append(
-        "manual_input",
-        architectureText
-      );
-    }
-
-
-    const ingestResponse =
-      await fetch(
-        "http://127.0.0.1:8000/ingest",
-        {
-          method: "POST",
-          body: formData,
-        }
-      );
-
-
-    const ingestResult =
-      await ingestResponse.json();
-
-
-    if (!ingestResponse.ok) {
-      throw new Error(
-        ingestResult.detail ||
-          "Artifact ingestion failed."
-      );
-    }
-    setIngestionResult(
-    ingestResult
-  );
-
-
-    /*
-     * STEP 2
-     *
-     * Check whether the ingestion
-     * pipeline reconstructed a canonical
-     * architecture.
-     */
-
-    if (
-      !ingestResult
-        .architecture_detected
-    ) {
-      throw new Error(
-        "The files were uploaded successfully, but ArchGuard could not yet reconstruct an architecture from these artifact types. JSON architecture detection works now; Terraform, Kubernetes, source-code and documentation extraction are added in the next parser stage."
-      );
-    }
-
-
-    const reconstructedArchitecture =
-      ingestResult.architecture;
-
-
-    setArchitecture(
-      reconstructedArchitecture
-    );
-
-
-    /*
-     * STEP 3
-     *
-     * Pass the reconstructed architecture
-     * through our existing analysis
-     * pipeline.
-     */
-
-    const analysisResponse =
-      await fetch(
-        "http://127.0.0.1:8000/analyze",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-
-          body: JSON.stringify(
-            reconstructedArchitecture
-          ),
-        }
-      );
-
-
-    const analysisResult =
-      await analysisResponse.json();
-
-
-    if (!analysisResponse.ok) {
-      throw new Error(
-        analysisResult.detail ||
-          "Architecture analysis failed."
-      );
-    }
-
-
-    setAnalysis(
-      analysisResult
-    );
-
-  } catch (err) {
-
-    setError(
-      err.message ||
-        "Something went wrong."
-    );
-
-  } finally {
-
-    setLoading(false);
-
-  }
-}
 
   return (
     <div className="app-shell">
-
-      <header className="hero">
-
-        <div>
-          <p className="eyebrow">
-            AI ARCHITECTURE ENGINEER
-          </p>
-
-          <h1>
-            ArchGuard AI
-          </h1>
-
-          <p className="hero-copy">
-            Reconstruct, analyze and
-            stress-test software systems
-            using deterministic rules,
-            graph intelligence, grounded
-            retrieval and Gemini.
-          </p>
+      <nav className="topbar">
+        <button className="brand" onClick={resetWorkspace}>
+          <span className="brand-mark">A</span>
+          <span><strong>ArchGuard</strong><small>AI Architecture Engineer</small></span>
+        </button>
+        <div className="top-actions">
+          <span className="status"><i /> System ready</span>
+          <button className="ghost" onClick={resetWorkspace}>New session</button>
         </div>
+      </nav>
 
-        <div className="status-chip">
-          Local Prototype
-        </div>
+      <main className={messages.length ? "workspace has-chat" : "workspace"}>
+        {!messages.length && (
+          <section className="welcome">
+            <div className="glow glow-one" />
+            <div className="glow glow-two" />
+            <span className="kicker">DESIGN · REVIEW · SIMULATE · EVOLVE</span>
+            <h1>Build systems that are ready<br />for the <span>real world.</span></h1>
+            <p>Describe an idea, attach architecture artifacts, or ask a what-if question. ArchGuard turns engineering context into evidence-backed architecture guidance.</p>
 
-      </header>
-
-
-      <main>
-
-        <section
-          className=
-            "panel input-panel"
-        >
-
-          <div
-            className=
-              "section-heading"
-          >
-
-            <div>
-
-              <p className="step-label">
-                Architecture Input
-              </p>
-
-              <h2>
-                Analyze your system
-              </h2>
-
-              <p className=
-                "section-description"
-              >
-                Upload one or more
-                architecture artifacts,
-                or paste architecture
-                content manually.
-              </p>
-
-            </div>
-
-          </div>
-
-
-          <FileDropZone
-            files={files}
-            setFiles={setFiles}
-          />
-
-
-          <div
-            className=
-              "manual-input-toggle"
-          >
-
-            <button
-              type="button"
-              className=
-                "secondary-button"
-              onClick={() =>
-                setShowManualInput(
-                  (current) =>
-                    !current
-                )
-              }
-            >
-
-              {
-                showManualInput
-                  ? "Hide manual input"
-                  : "Paste manually instead"
-              }
-
-            </button>
-
-          </div>
-
-
-          {showManualInput && (
-
-            <div
-              className=
-                "manual-input-section"
-            >
-
-              <div
-                className=
-                  "manual-input-header"
-              >
-
-                <div>
-
-                  <p
-                    className=
-                      "paste-label"
-                  >
-                    Paste architecture
-                    manually
-                  </p>
-
-                  <p
-                    className=
-                      "manual-helper"
-                  >
-                    You can paste an
-                    architecture definition
-                    here instead of uploading
-                    files, or use both
-                    together.
-                  </p>
-
-                </div>
-
-              </div>
-
-
+            <form className="composer hero-composer" onSubmit={askArchGuard}>
               <textarea
-                value={
-                  architectureText
-                }
-                onChange={(event) =>
-                  setArchitectureText(
-                    event.target.value
-                  )
-                }
-                spellCheck="false"
-                placeholder={`Paste architecture JSON here...
-
-Example:
-
-{
-  "services": [
-    {
-      "name": "API Gateway",
-      "type": "gateway"
-    }
-  ],
-  "connections": []
-}`}
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    askArchGuard(e);
+                  }
+                }}
+                placeholder="Ask ArchGuard anything about your system..."
+                rows={3}
               />
+              <div className="composer-footer">
+                <button type="button" className="attach" onClick={() => setShowArtifacts((v) => !v)}>
+                  ＋ Attach context {files.length > 0 && <b>{files.length}</b>}
+                </button>
+                <span className="hint">Enter to send · Shift + Enter for new line</span>
+                <button className="send" disabled={loading || !prompt.trim()}>{loading ? "Thinking…" : "Ask ArchGuard →"}</button>
+              </div>
+            </form>
 
+            <div className="suggestions">
+              {SUGGESTIONS.map((item) => (
+                <button key={item} onClick={() => setPrompt(item)}>{item}<span>↗</span></button>
+              ))}
             </div>
-
-          )}
-
-
-          <div
-            className=
-              "input-status-row"
-          >
-
-            <div
-              className=
-                "input-status"
-            >
-
-              <span>
-                Files
-              </span>
-
-              <strong>
-                {files.length}
-              </strong>
-
-            </div>
-
-
-            <div
-              className=
-                "input-status"
-            >
-
-              <span>
-                Manual input
-              </span>
-
-              <strong>
-                {
-                  architectureText
-                    .trim()
-                    .length > 0
-                    ? "Ready"
-                    : "Empty"
-                }
-              </strong>
-
-            </div>
-
-          </div>
-
-
-          <button
-            className=
-              "primary-button"
-            onClick={
-              analyzeArchitecture
-            }
-            disabled={loading}
-          >
-
-            {
-              loading
-                ? "Analyzing..."
-                : "Analyze System"
-            }
-
-          </button>
-
-
-          {error && (
-            <div className=
-              "error-box"
-            >
-              {error}
-            </div>
-          )}
-
-        </section>
-
-<section className="panel">
-
-  <div className="section-heading">
-
-    <div>
-      <p className="step-label">
-        Architecture Digital Twin
-      </p>
-
-      <h2>
-        Interactive Dependency Topology
-      </h2>
-
-      <p className="section-description">
-        Explore reconstructed components,
-        dependencies, evidence and confidence.
-      </p>
-    </div>
-
-    <span className="metric">
-      {
-        ingestionResult
-          ?.digital_twin
-          ?.entities
-          ?.length
-        ??
-        architecture.services.length
-      }{" "}
-      components
-    </span>
-
-  </div>
-
-
-  {ingestionResult?.digital_twin ? (
-
-  <div>
-
-    <div className="summary-grid">
-
-      <div className="summary-card">
-        <span>
-          Digital Twin Components
-        </span>
-
-        <strong>
-          {
-            ingestionResult
-              .digital_twin
-              .entities
-              ?.length
-            ?? 0
-          }
-        </strong>
-      </div>
-
-
-      <div className="summary-card">
-        <span>
-          Dependencies
-        </span>
-
-        <strong>
-          {
-            ingestionResult
-              .digital_twin
-              .connections
-              ?.length
-            ?? 0
-          }
-        </strong>
-      </div>
-
-
-      <div className="summary-card">
-        <span>
-          Entity Resolutions
-        </span>
-
-        <strong>
-          {
-            ingestionResult
-              .digital_twin
-              .resolution_log
-              ?.length
-            ?? 0
-          }
-        </strong>
-      </div>
-
-
-      <div className="summary-card">
-        <span>
-          Evidence Sources
-        </span>
-
-        <strong>
-          {
-            ingestionResult
-              .artifacts
-              ?.length
-            ?? 0
-          }
-        </strong>
-      </div>
-
-    </div>
-
-
-    <ArchitectureGraph
-      digitalTwin={
-        ingestionResult.digital_twin
-      }
-    />
-
-  </div>
-
-) : (
-
-  <div className="graph-container">
-
-    <ReactFlow
-      nodes={nodes}
-      edges={edges}
-      fitView
-    >
-      <Background />
-      <Controls />
-    </ReactFlow>
-
-  </div>
-
-)}
-
-</section>
-
-        {analysis && (
-          <>
-
-            <section
-              className=
-                "summary-grid"
-            >
-
-              <div
-                className=
-                  "summary-card"
-              >
-
-                <span>
-                  Components
-                </span>
-
-                <strong>
-                  {
-                    analysis
-                      .architecture
-                      .component_count
-                  }
-                </strong>
-
-              </div>
-
-
-              <div
-                className=
-                  "summary-card"
-              >
-
-                <span>
-                  Connections
-                </span>
-
-                <strong>
-                  {
-                    analysis
-                      .architecture
-                      .connection_count
-                  }
-                </strong>
-
-              </div>
-
-
-              <div
-                className=
-                  "summary-card"
-              >
-
-                <span>
-                  Findings
-                </span>
-
-                <strong>
-                  {
-                    analysis
-                      .findings
-                      .length
-                  }
-                </strong>
-
-              </div>
-
-
-              <div
-                className=
-                  "summary-card"
-              >
-
-                <span>
-                  Gemini
-                </span>
-
-                <strong>
-                  {
-                    analysis
-                      .gemini_available
-                      ? "Online"
-                      : "Fallback"
-                  }
-                </strong>
-
-              </div>
-
-            </section>
-
-
-            <section className="panel">
-
-              <div
-                className=
-                  "section-heading"
-              >
-
-                <div>
-
-                  <p className=
-                    "step-label"
-                  >
-                    Graph Intelligence
-                  </p>
-
-                  <h2>
-                    Critical Components
-                  </h2>
-
-                </div>
-
-              </div>
-
-
-              <div
-                className=
-                  "critical-list"
-              >
-
-                {
-                  analysis
-                    .critical_components
-                    .map(
-                      (
-                        component,
-                        index
-                      ) => (
-
-                        <div
-                          className=
-                            "critical-row"
-                          key={
-                            component
-                              .component
-                          }
-                        >
-
-                          <span>
-                            {index + 1}.
-                            {" "}
-                            {
-                              component
-                                .component
-                            }
-                          </span>
-
-                          <strong>
-                            {
-                              component
-                                .criticality_score
-                            }
-                            /100
-                          </strong>
-
-                        </div>
-
-                      )
-                    )
-                }
-
-              </div>
-
-            </section>
-
-
-            <section className="panel">
-
-              <div
-                className=
-                  "section-heading"
-              >
-
-                <div>
-
-                  <p className=
-                    "step-label"
-                  >
-                    Risk Intelligence
-                  </p>
-
-                  <h2>
-                    Ranked Findings
-                  </h2>
-
-                </div>
-
-              </div>
-              <section className="panel">
-
-  <div className="section-heading">
-
-    <div>
-
-      <p className="step-label">
-        Remediation
-      </p>
-
-      <h2>
-        Proposed Architecture Fixes
-      </h2>
-
-      <p className="section-description">
-        Generate safe remediation proposals
-        for the detected architecture risks.
-        No changes are executed automatically.
-      </p>
-
-    </div>
-
-  </div>
-
-
-  {!remediationPlan && (
-
-    <button
-      className="primary-button"
-      onClick={
-        generateRemediationPlan
-      }
-    >
-      Generate Remediation Plan
-    </button>
-
-  )}
-
-
-  {remediationPlan && (
-
-    <div className="findings">
-
-      {
-        remediationPlan
-          .proposals
-          .map(
-            (
-              proposal
-            ) => (
-
-              <article
-                className="finding-card"
-                key={
-                  proposal
-                    .proposal_id
-                }
-              >
-
-                <div className="finding-top">
-
-                  <span
-                    className={
-                      `severity ${
-                        proposal
-                          .finding
-                          .severity
-                      }`
-                    }
-                  >
-                    {
-                      proposal
-                        .finding
-                        .severity
-                    }
-                  </span>
-
-
-                  <span className="risk-score">
-                    Risk{" "}
-                    {
-                      proposal
-                        .finding
-                        .risk_score
-                    }
-                    /100
-                  </span>
-
-                </div>
-
-
-                <h3>
-                  {
-                    proposal
-                      .finding
-                      .component
-                  }
-                </h3>
-
-
-                <p>
-                  {
-                    proposal
-                      .recommended_change
-                  }
-                </p>
-
-
-                <div className="recommendation">
-
-                  <strong>
-                    Proposed actions
-                  </strong>
-
-                  <ul>
-
-                    {
-                      proposal
-                        .proposed_actions
-                        .map(
-                          (
-                            action,
-                            index
-                          ) => (
-
-                            <li
-                              key={
-                                index
-                              }
-                            >
-                              {action}
-                            </li>
-
-                          )
-                        )
-                    }
-
-                  </ul>
-
-                </div>
-
-
-                <div
-                  style={{
-                    display: "flex",
-                    gap: "10px",
-                    marginTop: "16px",
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() =>
-                      loadProposedDiff(
-                        proposal.proposal_id
-                      )
-                    }
-                  >
-                    Preview Proposed Diff
-                  </button>
-
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() =>
-                      approveProposal(
-                        proposal.proposal_id
-                      )
-                    }
-                    disabled={
-                      approvalStatuses[
-                        proposal.proposal_id
-                      ] === "approved" ||
-                      approvalStatuses[
-                        proposal.proposal_id
-                      ] === "rejected"
-                    }
-                  >
-                    {
-                      approvalStatuses[
-                        proposal.proposal_id
-                      ] === "approved"
-                        ? "✓ Approved"
-                        : "Approve Proposal"
-                    }
-                  </button>
-
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() =>
-                      rejectProposal(
-                        proposal.proposal_id
-                      )
-                    }
-                    disabled={
-                      approvalStatuses[
-                        proposal.proposal_id
-                      ] === "approved" ||
-                      approvalStatuses[
-                        proposal.proposal_id
-                      ] === "rejected"
-                    }
-                  >
-                    {
-                      approvalStatuses[
-                        proposal.proposal_id
-                      ] === "rejected"
-                        ? "Rejected"
-                        : "Reject"
-                    }
-                  </button>
-                </div>
-
-
-                {
-                  proposedDiffs[
-                    proposal.proposal_id
-                  ] && (
-                    <div
-                      style={{
-                        marginTop: "18px",
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontSize: "12px",
-                          fontWeight: 700,
-                          marginBottom: "8px",
-                        }}
-                      >
-                        PROPOSED CHANGE
-                      </div>
-
-                      <pre
-                        style={{
-                          background: "#08111f",
-                          border: "1px solid #28364e",
-                          borderRadius: "12px",
-                          padding: "16px",
-                          overflowX: "auto",
-                          fontSize: "12px",
-                          lineHeight: 1.7,
-                          whiteSpace: "pre-wrap",
-                        }}
-                      >
-                        {
-                          proposedDiffs[
-                            proposal.proposal_id
-                          ].diff
-                        }
-                      </pre>
-
-                      <div
-                        style={{
-                          fontSize: "12px",
-                          opacity: 0.65,
-                          marginTop: "8px",
-                        }}
-                      >
-                        {
-                          proposedDiffs[
-                            proposal.proposal_id
-                          ].note
-                        }
-                      </div>
-                    </div>
-                  )
-                }
-
-                {
-  executionResults[
-    proposal.proposal_id
-  ] && (
-
-    <div
-      style={{
-        marginTop: "16px",
-        padding: "16px",
-        border:
-          "1px solid #2d405e",
-        borderRadius: "12px",
-        background: "#0b1524",
-      }}
-    >
-
-      <div
-        style={{
-          fontWeight: 700,
-          marginBottom: "10px",
-        }}
-      >
-        Sandbox Execution
-      </div>
-
-
-      <div>
-        {
-          executionResults[
-            proposal.proposal_id
-          ].validation.valid
-            ? "✓ Validation passed"
-            : "✕ Validation failed"
-        }
-      </div>
-
-
-      <div
-        style={{
-          marginTop: "6px",
-          fontSize: "12px",
-          opacity: 0.7,
-        }}
-      >
-        {
-          executionResults[
-            proposal.proposal_id
-          ].validation.message
-        }
-      </div>
-
-
-      <div
-        style={{
-          marginTop: "12px",
-          fontSize: "12px",
-          opacity: 0.6,
-        }}
-      >
-        🔒 Local sandbox only.
-        No external or production
-        system was modified.
-      </div>
-
-    </div>
-  )
-}
-
-                <div
-                  style={{
-                    marginTop:
-                      "16px",
-
-                    padding:
-                      "12px",
-
-                    border:
-                      "1px solid #3b4962",
-
-                    borderRadius:
-                      "10px",
-                  }}
-                >
-
-                  {
-                    approvalStatuses[
-                      proposal.proposal_id
-                    ] === "approved"
-                      ? "✓ Proposal approved"
-                      : approvalStatuses[
-                          proposal.proposal_id
-                        ] === "rejected"
-                        ? "✕ Proposal rejected"
-                        : "🔒 Human approval required"
-                  }
-
-                  <div
-                    style={{
-                      opacity:
-                        0.7,
-
-                      marginTop:
-                        "5px",
-
-                      fontSize:
-                        "12px",
-                    }}
-                  >
-                    No infrastructure or
-                    source-code changes have
-                    been executed.
-                  </div>
-
-                </div>
-
-              </article>
-
-            )
-          )
-      }
-
-    </div>
-
-  )}
-
-</section>
-
-
-              <div className="findings">
-
-                {
-                  analysis
-                    .findings
-                    .map(
-                      (
-                        finding,
-                        index
-                      ) => (
-
-                        <article
-                          className=
-                            "finding-card"
-                          key={
-                            `${finding.source}-${index}`
-                          }
-                        >
-
-                          <div
-                            className=
-                              "finding-top"
-                          >
-
-                            <span
-                              className={
-                                `severity ${
-                                  finding
-                                    .severity
-                                    .toLowerCase()
-                                }`
-                              }
-                            >
-                              {
-                                finding
-                                  .severity
-                              }
-                            </span>
-
-
-                            <span
-                              className=
-                                "risk-score"
-                            >
-                              Risk{" "}
-                              {
-                                finding
-                                  .risk_score
-                              }
-                              /100
-                            </span>
-
-                          </div>
-
-
-                          <h3>
-                            {
-                              finding
-                                .issue
-                            }
-                          </h3>
-
-
-                          <p
-                            className=
-                              "component"
-                          >
-                            {
-                              finding
-                                .component
-                            }
-                            {" • "}
-                            {
-                              finding
-                                .category
-                            }
-                          </p>
-
-
-                          <p>
-                            {
-                              finding
-                                .explanation
-                            }
-                          </p>
-
-
-                          <div
-                            className=
-                              "recommendation"
-                          >
-
-                            <strong>
-                              Recommendation
-                            </strong>
-
-                            <p>
-                              {
-                                finding
-                                  .recommendation
-                              }
-                            </p>
-
-                          </div>
-
-
-                          <small>
-                            Source:{" "}
-                            {
-                              finding
-                                .source
-                            }
-                          </small>
-
-                        </article>
-
-                      )
-                    )
-                }
-
-              </div>
-
-            </section>
-
-
-            <section className="panel">
-
-              <div
-                className=
-                  "section-heading"
-              >
-
-                <div>
-
-                  <p className=
-                    "step-label"
-                  >
-                    Grounding
-                  </p>
-
-                  <h2>
-                    Retrieved Knowledge
-                  </h2>
-
-                </div>
-
-              </div>
-
-
-              <div
-                className=
-                  "knowledge-grid"
-              >
-
-                {
-                  analysis
-                    .knowledge_sources
-                    ?.map(
-                      (source) => (
-
-                        <article
-                          className=
-                            "knowledge-card"
-                          key={
-                            source.id
-                          }
-                        >
-
-                          <span>
-                            {
-                              source
-                                .category
-                            }
-                          </span>
-
-                          <h3>
-                            {
-                              source
-                                .title
-                            }
-                          </h3>
-
-                          <p>
-                            {
-                              source
-                                .content
-                            }
-                          </p>
-
-                        </article>
-
-                      )
-                    )
-                }
-
-              </div>
-
-            </section>
-
-          </>
+          </section>
         )}
 
+        {showArtifacts && (
+          <section className="artifact-drawer">
+            <div className="drawer-head"><div><span className="kicker">OPTIONAL CONTEXT</span><h2>Give ArchGuard more evidence</h2></div><button className="close" onClick={() => setShowArtifacts(false)}>×</button></div>
+            <FileDropZone files={files} setFiles={setFiles} />
+            <label className="manual-label">Or paste architecture, requirements, logs, or notes</label>
+            <textarea className="manual-area" value={manualInput} onChange={(e) => setManualInput(e.target.value)} placeholder="Paste JSON, YAML, architecture notes, stakeholder requirements..." />
+          </section>
+        )}
+
+        {messages.length > 0 && (
+          <div className="product-grid">
+            <section className="conversation-panel">
+              <div className="panel-title"><div><span className="kicker">ARCHITECTURE COPILOT</span><h2>Engineering conversation</h2></div><span className={`intent intent-${intent}`}>{intent}</span></div>
+              <div className="messages">
+                {messages.map((message, index) => (
+                  <article className={`message ${message.role}`} key={`${message.role}-${index}`}>
+                    <div className="avatar">{message.role === "user" ? "Y" : "A"}</div>
+                    <div><strong>{message.role === "user" ? "You" : "ArchGuard"}</strong><div className="message-text">{message.text}</div></div>
+                  </article>
+                ))}
+                {loading && <article className="message assistant"><div className="avatar">A</div><div><strong>ArchGuard</strong><div className="thinking"><i /><i /><i /> Analyzing architecture and evidence…</div></div></article>}
+              </div>
+
+              {error && <div className="error-box">{error}</div>}
+
+              <form className="composer compact" onSubmit={askArchGuard}>
+                <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Ask a follow-up, change a requirement, or run a scenario..." rows={2} />
+                <div className="composer-footer">
+                  <button type="button" className="attach" onClick={() => setShowArtifacts((v) => !v)}>＋ Context {files.length > 0 && <b>{files.length}</b>}</button>
+                  <button className="send" disabled={loading || !prompt.trim()}>Send →</button>
+                </div>
+              </form>
+            </section>
+
+            <section className="insight-panel">
+              <div className="tabs">
+                <button className={activeTab === "architecture" ? "active" : ""} onClick={() => setActiveTab("architecture")}>Architecture</button>
+                <button className={activeTab === "risks" ? "active" : ""} onClick={() => setActiveTab("risks")}>Risks <b>{findings.length || ""}</b></button>
+                <button className={activeTab === "evidence" ? "active" : ""} onClick={() => setActiveTab("evidence")}>Evidence</button>
+              </div>
+
+              {activeTab === "architecture" && (
+                <div className="tab-body">
+                  <div className="insight-heading"><div><span className="kicker">DIGITAL TWIN</span><h2>System topology</h2></div><span className="metric">{digitalTwin?.entities?.length || 0} components</span></div>
+                  {digitalTwin?.entities?.length ? <ArchitectureGraph digitalTwin={digitalTwin} /> : <div className="empty-state"><span>◇</span><h3>No architecture yet</h3><p>Attach artifacts or ask ArchGuard to review an existing system. Design-mode structured graph generation is a follow-up capability.</p></div>}
+                </div>
+              )}
+
+              {activeTab === "risks" && (
+                <div className="tab-body">
+                  <div className="insight-heading"><div><span className="kicker">RISK INTELLIGENCE</span><h2>Detected findings</h2></div>{waf?.overall_score != null && <span className="score">{Math.round(waf.overall_score)}<small>/100</small></span>}</div>
+                  <div className="risk-list">
+                    {findings.length ? findings.map((finding, index) => (
+                      <article className="risk-card" key={finding.id || index}>
+                        <div className="risk-top"><span className={`severity ${String(finding.severity || "info").toLowerCase()}`}>{finding.severity || "INFO"}</span>{finding.risk_score != null && <span>Risk {finding.risk_score}</span>}</div>
+                        <h3>{finding.title || finding.category || "Architecture finding"}</h3>
+                        <p>{finding.description || finding.message}</p>
+                        {finding.recommendation && <div className="recommendation">↳ {finding.recommendation}</div>}
+                      </article>
+                    )) : <div className="empty-state"><span>✓</span><h3>No structured risks returned</h3><p>Run a REVIEW request with architecture context to populate deterministic findings.</p></div>}
+                  </div>
+                </div>
+              )}
+
+              {activeTab === "evidence" && (
+                <div className="tab-body">
+                  <div className="insight-heading"><div><span className="kicker">TRACEABILITY</span><h2>Input & reasoning context</h2></div></div>
+                  <div className="evidence-grid">
+                    <div><span>Intent</span><strong>{intent}</strong></div>
+                    <div><span>Architecture detected</span><strong>{result?.context?.architecture_detected ? "Yes" : "No"}</strong></div>
+                    <div><span>Files processed</span><strong>{result?.context?.processed_files?.length || files.length}</strong></div>
+                    <div><span>Gemini synthesis</span><strong>{result?.synthesis?.status || "—"}</strong></div>
+                  </div>
+                  <pre className="raw-context">{JSON.stringify(execution, null, 2)}</pre>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
       </main>
 
+      <footer><span>ArchGuard AI</span><span>Evidence-backed architecture engineering · Human approval before execution</span></footer>
     </div>
   );
 }
-
 
 export default App;
