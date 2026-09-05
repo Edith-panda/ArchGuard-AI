@@ -37,20 +37,25 @@ IMPORTANT RULES:
    explicitly supplied.
 
 10. Keep answers structured and useful to a software engineer.
+
+UI OUTPUT CONTRACT:
+- Never emit an empty heading or section.
+- Never emit horizontal-rule separators such as --- or ***.
+- Do not place architecture proposals inside fenced code blocks, Mermaid
+  blocks, or ASCII-art code fences.
+- A section called "Recommended Architecture Proposal" must contain concrete
+  architecture content immediately below the heading, such as a numbered
+  request flow, component list, or Markdown table.
+- Use Markdown tables for technology stacks and risk/mitigation matrices when
+  useful.
+- If a section has no meaningful content, omit that section completely.
 """
 
 
 def _safe_json(value: Any) -> str:
-    """
-    Serialize ArchGuard results safely for Gemini.
-    """
-
+    """Serialize ArchGuard results safely for Gemini."""
     try:
-        return json.dumps(
-            value,
-            indent=2,
-            default=str,
-        )
+        return json.dumps(value, indent=2, default=str)
     except Exception:
         return str(value)
 
@@ -61,39 +66,27 @@ def build_synthesis_prompt(
     architecture: Optional[dict],
     execution_result: Optional[dict],
 ) -> str:
-    """
-    Build a grounded prompt from the user's question
-    and ArchGuard's deterministic analysis.
-    """
+    """Build a grounded prompt from the user's question and ArchGuard analysis."""
 
-    architecture_json = _safe_json(
-        architecture or {}
-    )
-
-    result_json = _safe_json(
-        execution_result or {}
-    )
+    architecture_json = _safe_json(architecture or {})
+    result_json = _safe_json(execution_result or {})
 
     return f"""
 USER REQUEST
 ------------
 {user_prompt}
 
-
 DETECTED ENGINEERING INTENT
 ---------------------------
 {intent}
-
 
 ARCHITECTURE CONTEXT
 --------------------
 {architecture_json}
 
-
 ARCHGUARD ENGINE RESULT
 -----------------------
 {result_json}
-
 
 RESPONSE INSTRUCTIONS
 ---------------------
@@ -147,10 +140,7 @@ def synthesize_assistant_response(
     architecture: Optional[dict],
     execution_result: Optional[dict],
 ) -> str:
-    """
-    Ask Gemini to convert ArchGuard's structured
-    result into a grounded engineering response.
-    """
+    """Ask Gemini to convert ArchGuard's structured result into a grounded response."""
 
     prompt = build_synthesis_prompt(
         user_prompt=user_prompt,
@@ -161,23 +151,14 @@ def synthesize_assistant_response(
 
     response = client.models.generate_content(
         model=model_name,
-        contents=(
-            SYSTEM_INSTRUCTION
-            + "\n\n"
-            + prompt
-        ),
+        contents=(SYSTEM_INSTRUCTION + "\n\n" + prompt),
     )
 
-    text = getattr(
-        response,
-        "text",
-        None,
-    )
+    text = getattr(response, "text", None)
 
     if not text:
         return (
-            "ArchGuard completed the analysis, "
-            "but the reasoning layer did not "
+            "ArchGuard completed the analysis, but the reasoning layer did not "
             "return a textual response."
         )
 
