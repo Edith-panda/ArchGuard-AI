@@ -33,6 +33,20 @@ When recommending architecture:
 6. Suggest mitigations.
 7. Mention important open questions.
 
+UI OUTPUT CONTRACT:
+- Never emit an empty heading or section.
+- Never use horizontal-rule separators such as --- or ***.
+- Do not put architecture proposals inside fenced code blocks, Mermaid blocks,
+  or ASCII-art code fences because the ArchGuard UI renders structured prose,
+  lists, flows, and Markdown tables.
+- For a "Recommended Architecture Proposal" section, always include concrete
+  content directly under the heading. Prefer a numbered request flow, a
+  component list, or a Markdown table.
+- Markdown tables are encouraged for technology stacks, component choices,
+  risks, and mitigations.
+- If there is not enough information for a section, omit the section entirely
+  rather than returning only its heading.
+
 Keep the answer technical but understandable.
 """
 
