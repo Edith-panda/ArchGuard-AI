@@ -13,6 +13,14 @@ class AssistantExecutionError(Exception):
     pass
 
 
+# Local conversation fallback for the current single-user development workspace.
+# It keeps the last grounded architecture so short follow-ups do not collapse to
+# a one-node graph. Production deployment should replace this with session-scoped
+# persistence (Redis/DB) rather than process memory.
+_LAST_ARCHITECTURE: Optional[dict] = None
+_LAST_FINDINGS: list[dict] = []
+
+
 def _normalize_findings(findings: list[Any]) -> list[dict]:
     normalized = []
     for finding in findings or []:
@@ -26,10 +34,8 @@ def _normalize_findings(findings: list[Any]) -> list[dict]:
 
 
 def require_architecture(architecture: Optional[dict]) -> dict:
-    if not architecture:
+    if not architecture or not architecture.get("services"):
         raise AssistantExecutionError("Architecture is required for this operation.")
-    if not architecture.get("services"):
-        raise AssistantExecutionError("No architecture components were detected.")
     return architecture
 
 
@@ -54,20 +60,12 @@ def _clean_component_name(value: str) -> str:
 
 def _looks_like_component(value: str) -> bool:
     lower = value.lower()
-    return bool(
-        lower in {"postgresql", "postgres", "kafka", "redis"}
-        or any(token in lower for token in (" service", " client", " gateway", " database", " db"))
-    )
+    return bool(lower in {"postgresql", "postgres", "kafka", "redis"} or any(
+        token in lower for token in (" service", " client", " gateway", " database", " db")
+    ))
 
 
 def _architecture_from_prompt(prompt: str) -> Optional[dict]:
-    """Conservatively derive an architecture graph from explicit prose in the prompt.
-
-    This is intentionally deterministic and only recognizes relationships the user
-    directly states (arrow chains, explicit calls, shared databases, Kafka consumers).
-    It is a fallback for conversational SIMULATE requests when no file/manual artifact
-    produced a canonical architecture.
-    """
     services: dict[str, dict] = {}
     connections: set[tuple[str, str]] = set()
 
@@ -80,68 +78,49 @@ def _architecture_from_prompt(prompt: str) -> Optional[dict]:
             services[key] = {
                 "name": cleaned,
                 "type": _infer_component_type(cleaned),
-                "evidence": [{
-                    "filename": "conversation-prompt",
-                    "reason": "Explicitly described in the user prompt",
-                }],
+                "evidence": [{"filename": "conversation-prompt", "reason": "Explicitly described in the user prompt"}],
             }
         return services[key]["name"]
 
     def add_connection(source: str, target: str):
-        src = add_service(source)
-        dst = add_service(target)
+        src, dst = add_service(source), add_service(target)
         if src and dst and src != dst:
             connections.add((src, dst))
 
-    # Explicit flow chains: Web Client → API Gateway → Order Service → Payment Service
     for sentence in re.split(r"[\n.!?]", prompt):
         if "→" in sentence or "->" in sentence:
-            parts = re.split(r"\s*(?:→|->)\s*", sentence)
-            parts = [_clean_component_name(part) for part in parts]
-            component_parts = [part for part in parts if _looks_like_component(part)]
-            for source, target in zip(component_parts, component_parts[1:]):
+            parts = [_clean_component_name(p) for p in re.split(r"\s*(?:→|->)\s*", sentence)]
+            parts = [p for p in parts if _looks_like_component(p)]
+            for source, target in zip(parts, parts[1:]):
                 add_connection(source, target)
 
-    # Named service/gateway/client/database mentions become nodes.
     component_pattern = re.compile(
-        r"\b([A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*)*\s+"
-        r"(?:Service|Client|Gateway|Database|DB))\b"
+        r"\b([A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*)*\s+(?:Service|Client|Gateway|Database|DB))\b"
     )
     for match in component_pattern.finditer(prompt):
         add_service(match.group(1))
-
     if re.search(r"\bPostgreSQL\b", prompt, re.IGNORECASE):
         add_service("PostgreSQL")
     if re.search(r"\bKafka\b", prompt, re.IGNORECASE):
         add_service("Kafka")
 
-    # Explicit synchronous calls: Order Service synchronously calls Inventory Service and Payment Service.
     call_pattern = re.compile(
-        r"([A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*)*\s+Service)\s+"
-        r"(?:synchronously\s+)?calls\s+([^.!?]+)",
+        r"([A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*)*\s+Service)\s+(?:synchronously\s+)?calls\s+([^.!?]+)",
         re.IGNORECASE,
     )
     for match in call_pattern.finditer(prompt):
-        source = match.group(1)
-        targets = component_pattern.findall(match.group(2))
-        for target in targets:
-            add_connection(source, target)
+        for target in component_pattern.findall(match.group(2)):
+            add_connection(match.group(1), target)
 
-    # Explicit shared PostgreSQL dependency.
     shared_db_pattern = re.compile(
-        r"([^.!?]+?)\s+share(?:s)?\s+(?:one\s+|a\s+|the\s+)?PostgreSQL\s+database",
-        re.IGNORECASE,
+        r"([^.!?]+?)\s+share(?:s)?\s+(?:one\s+|a\s+|the\s+)?PostgreSQL\s+database", re.IGNORECASE
     )
     for match in shared_db_pattern.finditer(prompt):
-        database_name = add_service("PostgreSQL")
-        if database_name:
-            for service_name in component_pattern.findall(match.group(1)):
-                add_connection(service_name, database_name)
+        for service_name in component_pattern.findall(match.group(1)):
+            add_connection(service_name, "PostgreSQL")
 
-    # Explicit Kafka consumption: Notification Service consumes ... from Kafka.
     kafka_consumer_pattern = re.compile(
-        r"([A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*)*\s+Service)\s+"
-        r"consumes?[^.!?]*\sfrom\s+Kafka",
+        r"([A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*)*\s+Service)\s+consumes?[^.!?]*\sfrom\s+Kafka",
         re.IGNORECASE,
     )
     for match in kafka_consumer_pattern.finditer(prompt):
@@ -149,24 +128,19 @@ def _architecture_from_prompt(prompt: str) -> Optional[dict]:
 
     if not services:
         return None
-
     return {
         "services": list(services.values()),
-        "connections": [[source, target] for source, target in sorted(connections)],
+        "connections": [[s, t] for s, t in sorted(connections)],
         "connection_evidence": [],
-        "assumptions": [
-            "Architecture was reconstructed conservatively from explicit relationships in the conversational prompt."
-        ],
+        "assumptions": ["Architecture was reconstructed conservatively from explicit relationships in the conversational prompt."],
     }
 
 
 def _find_database(architecture: dict) -> Optional[str]:
     for service in architecture.get("services", []):
-        service_type = str(service.get("type", "")).lower()
         name = str(service.get("name", ""))
-        if service_type == "database" or any(
-            term in name.lower()
-            for term in ("postgres", "mysql", "mongo", "database", " db")
+        if str(service.get("type", "")).lower() == "database" or any(
+            term in name.lower() for term in ("postgres", "mysql", "mongo", "database", " db")
         ):
             return name
     return None
@@ -174,146 +148,86 @@ def _find_database(architecture: dict) -> Optional[str]:
 
 def _find_named_component(prompt: str, architecture: dict) -> Optional[str]:
     text = prompt.lower()
-    candidates = sorted(
-        (str(s.get("name", "")) for s in architecture.get("services", [])),
-        key=len,
-        reverse=True,
-    )
+    candidates = sorted((str(s.get("name", "")) for s in architecture.get("services", [])), key=len, reverse=True)
     return next((name for name in candidates if name and name.lower() in text), None)
 
 
 def detect_scenario(prompt: str, architecture: dict) -> dict:
     text = prompt.lower()
-
-    if any(term in text for term in (
-        "database fails", "database goes down", "database outage",
-        "db fails", "db goes down", "db outage",
-        "postgres fails", "postgres goes down", "postgres outage",
-        "postgresql fails", "postgresql goes down", "postgresql outage",
-    )):
-        return {
-            "scenario_type": "database_failure",
-            "target": _find_named_component(prompt, architecture) or _find_database(architecture),
-            "traffic_multiplier": 1.0,
-        }
-
-    if any(term in text for term in (
-        "traffic spike", "load spike", "more traffic", "10x traffic", "100x traffic",
-    )):
+    database_failure_terms = (
+        "database fails", "database failed", "database has failed", "database goes down", "database outage",
+        "db fails", "db failed", "db has failed", "db goes down", "db outage",
+        "postgres fails", "postgres failed", "postgres has failed", "postgres goes down", "postgres outage",
+        "postgresql fails", "postgresql failed", "postgresql has failed", "postgresql goes down", "postgresql outage",
+    )
+    if any(term in text for term in database_failure_terms):
+        return {"scenario_type": "database_failure", "target": _find_named_component(prompt, architecture) or _find_database(architecture), "traffic_multiplier": 1.0}
+    if any(term in text for term in ("traffic spike", "load spike", "more traffic", "10x traffic", "30x traffic", "100x traffic")):
         match = re.search(r"(\d+(?:\.\d+)?)\s*[x×]", text)
-        multiplier = float(match.group(1)) if match else 10.0
-        return {
-            "scenario_type": "traffic_spike",
-            "target": None,
-            "traffic_multiplier": multiplier,
-        }
+        return {"scenario_type": "traffic_spike", "target": None, "traffic_multiplier": float(match.group(1)) if match else 10.0}
+    if any(term in text for term in ("dependency fails", "dependency failure", "third party fails", "external service fails")):
+        return {"scenario_type": "dependency_failure", "target": _find_named_component(prompt, architecture), "traffic_multiplier": 1.0}
+    return {"scenario_type": "component_failure", "target": _find_named_component(prompt, architecture), "traffic_multiplier": 1.0}
 
-    if any(term in text for term in (
-        "dependency fails", "dependency failure", "third party fails",
-        "external service fails",
-    )):
-        return {
-            "scenario_type": "dependency_failure",
-            "target": _find_named_component(prompt, architecture),
-            "traffic_multiplier": 1.0,
-        }
 
-    return {
-        "scenario_type": "component_failure",
-        "target": _find_named_component(prompt, architecture),
-        "traffic_multiplier": 1.0,
-    }
+def _remember(architecture: dict, findings: Optional[list[dict]] = None):
+    global _LAST_ARCHITECTURE, _LAST_FINDINGS
+    if architecture and architecture.get("services"):
+        _LAST_ARCHITECTURE = architecture
+    if findings is not None:
+        _LAST_FINDINGS = findings
+
+
+def _best_architecture(prompt: str, architecture: Optional[dict]) -> tuple[dict, str]:
+    explicit = architecture if architecture and architecture.get("services") else _architecture_from_prompt(prompt)
+    if explicit and len(explicit.get("services", [])) > 1:
+        _remember(explicit)
+        return explicit, "current_request"
+    if _LAST_ARCHITECTURE and _LAST_ARCHITECTURE.get("services"):
+        return _LAST_ARCHITECTURE, "conversation_context"
+    if explicit:
+        _remember(explicit)
+        return explicit, "current_request"
+    raise AssistantExecutionError("Architecture is required for this operation.")
 
 
 def execute_review(architecture: dict) -> dict:
     architecture = require_architecture(architecture)
     graph = build_architecture_graph(architecture)
-    findings = assign_risk_scores(analyze_architecture(architecture))
-    normalized_findings = _normalize_findings(findings)
-    waf = score_well_architected(normalized_findings)
-
-    return {
-        "engine": "architecture_review",
-        "graph": {
-            "nodes": graph.number_of_nodes(),
-            "edges": graph.number_of_edges(),
-        },
-        "findings": normalized_findings,
-        "well_architected": waf,
-    }
+    findings = _normalize_findings(assign_risk_scores(analyze_architecture(architecture)))
+    _remember(architecture, findings)
+    return {"engine": "architecture_review", "architecture": architecture, "graph": {"nodes": graph.number_of_nodes(), "edges": graph.number_of_edges()}, "findings": findings, "well_architected": score_well_architected(findings)}
 
 
 def execute_simulation(prompt: str, architecture: Optional[dict]) -> dict:
-    architecture_source = "ingested_artifacts"
-    if not architecture or not architecture.get("services"):
-        architecture = _architecture_from_prompt(prompt)
-        architecture_source = "conversation_prompt"
-
-    architecture = require_architecture(architecture)
+    architecture, source = _best_architecture(prompt, architecture)
     graph = build_architecture_graph(architecture)
     scenario = detect_scenario(prompt, architecture)
-
-    result = run_scenario(
-        graph=graph,
-        scenario_type=scenario["scenario_type"],
-        target=scenario.get("target"),
-        traffic_multiplier=scenario.get("traffic_multiplier", 1.0),
-    )
-
-    # Include deterministic review context as well so compound prompts such as
-    # "review + simulate + propose migration" still have grounded risk data.
-    findings = assign_risk_scores(analyze_architecture(architecture))
-    normalized_findings = _normalize_findings(findings)
-    waf = score_well_architected(normalized_findings)
-
-    return {
-        "engine": "scenario_lab",
-        "architecture_source": architecture_source,
-        "architecture": architecture,
-        "graph": {
-            "nodes": graph.number_of_nodes(),
-            "edges": graph.number_of_edges(),
-        },
-        "scenario": scenario,
-        "result": result,
-        "findings": normalized_findings,
-        "well_architected": waf,
-    }
+    result = run_scenario(graph=graph, scenario_type=scenario["scenario_type"], target=scenario.get("target"), traffic_multiplier=scenario.get("traffic_multiplier", 1.0))
+    findings = _normalize_findings(assign_risk_scores(analyze_architecture(architecture)))
+    _remember(architecture, findings)
+    return {"engine": "scenario_lab", "architecture_source": source, "architecture": architecture, "graph": {"nodes": graph.number_of_nodes(), "edges": graph.number_of_edges()}, "scenario": scenario, "result": result, "findings": findings, "well_architected": score_well_architected(findings)}
 
 
-def execute_assistant_intent(
-    intent: EngineeringIntent,
-    prompt: str,
-    architecture: Optional[dict],
-) -> dict:
+def execute_assistant_intent(intent: EngineeringIntent, prompt: str, architecture: Optional[dict]) -> dict:
     if intent == EngineeringIntent.REVIEW:
-        return execute_review(architecture)
-
+        architecture, source = _best_architecture(prompt, architecture)
+        result = execute_review(architecture)
+        result["architecture_source"] = source
+        return result
     if intent == EngineeringIntent.SIMULATE:
         return execute_simulation(prompt, architecture)
-
     if intent == EngineeringIntent.MODIFY:
-        return {
-            "engine": "architecture_evolution",
-            "status": "requires_reasoning",
-            "message": "Architecture impact analysis requires the reasoning layer.",
-        }
-
+        baseline, source = _best_architecture(prompt, architecture)
+        return {"engine": "architecture_evolution", "status": "requires_reasoning", "architecture_source": source, "baseline_architecture": baseline, "previous_findings": _LAST_FINDINGS, "message": "Modify the grounded baseline architecture using the new stakeholder requirement."}
     if intent == EngineeringIntent.DESIGN:
-        return {
-            "engine": "system_design",
-            "status": "requires_reasoning",
-            "message": "System-design generation requires the reasoning layer.",
-        }
-
+        return {"engine": "system_design", "status": "requires_reasoning", "message": "System-design generation requires the reasoning layer."}
     if intent == EngineeringIntent.QUESTION:
-        return {"engine": "architecture_qa", "status": "requires_reasoning"}
-
+        return {"engine": "architecture_qa", "status": "requires_reasoning", "baseline_architecture": _LAST_ARCHITECTURE}
     if intent == EngineeringIntent.REMEDIATE:
-        return {
-            "engine": "remediation",
-            "status": "approval_required",
-            "external_execution": False,
-        }
-
+        baseline, source = _best_architecture(prompt, architecture)
+        findings = _LAST_FINDINGS or _normalize_findings(assign_risk_scores(analyze_architecture(baseline)))
+        _remember(baseline, findings)
+        prioritized = sorted(findings, key=lambda f: f.get("risk_score", 0), reverse=True)[:3]
+        return {"engine": "remediation", "status": "approval_required", "architecture_source": source, "baseline_architecture": baseline, "prioritized_findings": prioritized, "external_execution": False, "message": "Create proposals for these grounded findings only. Do not execute without explicit human approval."}
     raise AssistantExecutionError(f"Unsupported intent: {intent}")
