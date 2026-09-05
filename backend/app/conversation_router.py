@@ -12,157 +12,84 @@ class EngineeringIntent(str, Enum):
 
 
 def normalize_prompt(prompt: Optional[str]) -> str:
-    """
-    Normalize a user prompt for deterministic
-    intent detection.
-    """
+    """Normalize a user prompt for deterministic intent detection."""
     return (prompt or "").strip().lower()
 
 
+def _contains_any(text: str, keywords: list[str]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
 def detect_intent(prompt: Optional[str]) -> EngineeringIntent:
+    """Determine the engineer's primary intent.
+
+    Explicit action requests are intentionally prioritized over secondary
+    requirements. For example, "Design an ecommerce platform ... traffic
+    spike ... failure scenarios" is a DESIGN request, not a SIMULATE request.
+    Simulation wins only when the prompt explicitly asks to simulate/what-if
+    an existing or described system.
     """
-    Determine what the engineer is trying to do.
-
-    This first implementation is intentionally
-    deterministic and local.
-
-    Gemini reasoning will be added later for
-    ambiguous requests.
-    """
-
     text = normalize_prompt(prompt)
 
     if not text:
         return EngineeringIntent.REVIEW
 
-    # -----------------------------------------
-    # SIMULATION / WHAT-IF
-    # -----------------------------------------
-
-    simulation_keywords = [
-        "what if",
-        "traffic spike",
-        "10x traffic",
-        "100x traffic",
-        "database goes down",
-        "database fails",
-        "db goes down",
-        "service fails",
-        "service goes down",
-        "dependency fails",
-        "blast radius",
-        "failure scenario",
-        "simulate",
-    ]
-
-    if any(
-        keyword in text
-        for keyword in simulation_keywords
-    ):
-        return EngineeringIntent.SIMULATE
-
-    # -----------------------------------------
-    # REMEDIATION
-    # -----------------------------------------
-
     remediation_keywords = [
-        "remediate",
-        "fix this",
-        "fix these",
-        "resolve these issues",
-        "resolve this issue",
-        "generate fix",
-        "implement fix",
-        "how do we fix",
-        "how can we fix",
+        "remediate", "fix this", "fix these", "resolve these issues",
+        "resolve this issue", "generate fix", "implement fix",
+        "how do we fix", "how can we fix",
     ]
-
-    if any(
-        keyword in text
-        for keyword in remediation_keywords
-    ):
-        return EngineeringIntent.REMEDIATE
-
-    # -----------------------------------------
-    # MODIFY / EVOLVE
-    # -----------------------------------------
-
     modification_keywords = [
-        "change architecture",
-        "modify architecture",
-        "update architecture",
-        "redesign",
-        "migrate",
-        "replace",
-        "move from",
-        "switch from",
-        "stakeholder wants",
-        "new requirement",
-        "new requirements",
+        "change architecture", "modify architecture", "update architecture",
+        "redesign", "migrate", "replace", "move from", "switch from",
+        "stakeholder wants", "new requirement", "new requirements",
         "change requirement",
     ]
-
-    if any(
-        keyword in text
-        for keyword in modification_keywords
-    ):
-        return EngineeringIntent.MODIFY
-
-    # -----------------------------------------
-    # DESIGN
-    # -----------------------------------------
-
     design_keywords = [
-        "design a",
-        "design an",
-        "design system",
-        "create architecture",
-        "propose architecture",
-        "suggest architecture",
-        "build architecture",
-        "architecture for",
-        "what tech stack",
-        "which tech stack",
-        "technology stack",
-        "which database",
-        "what database",
-        "which queue",
+        "design a", "design an", "design system", "create architecture",
+        "propose architecture", "suggest architecture", "build architecture",
+        "architecture for", "what tech stack", "which tech stack",
+        "technology stack", "which database", "what database", "which queue",
         "which cloud service",
     ]
-
-    if any(
-        keyword in text
-        for keyword in design_keywords
-    ):
-        return EngineeringIntent.DESIGN
-
-    # -----------------------------------------
-    # REVIEW
-    # -----------------------------------------
-
+    explicit_simulation_keywords = [
+        "simulate", "what if", "blast radius", "what happens if",
+        "what happens when",
+    ]
+    scenario_context_keywords = [
+        "traffic spike", "10x traffic", "100x traffic", "database goes down",
+        "database fails", "db goes down", "service fails", "service goes down",
+        "dependency fails", "failure scenario",
+    ]
     review_keywords = [
-        "review architecture",
-        "review this",
-        "analyze architecture",
-        "analyse architecture",
-        "analyze this",
-        "analyse this",
-        "find bottleneck",
-        "find bottlenecks",
-        "security risk",
-        "security risks",
-        "single point of failure",
-        "spof",
+        "review architecture", "review this", "analyze architecture",
+        "analyse architecture", "analyze this", "analyse this",
+        "find bottleneck", "find bottlenecks", "security risk",
+        "security risks", "single point of failure", "spof",
     ]
 
-    if any(
-        keyword in text
-        for keyword in review_keywords
-    ):
-        return EngineeringIntent.REVIEW
+    # Strong, explicit action verbs define the primary request. This prevents
+    # requirements such as "traffic spike" or "failure scenarios" from
+    # hijacking a design prompt.
+    if _contains_any(text, remediation_keywords):
+        return EngineeringIntent.REMEDIATE
 
-    # Everything else is treated as a general
-    # architecture / engineering question.
+    if _contains_any(text, modification_keywords):
+        return EngineeringIntent.MODIFY
+
+    if _contains_any(text, design_keywords):
+        return EngineeringIntent.DESIGN
+
+    # Explicit simulation language is safe to route directly. Scenario-only
+    # language also routes to SIMULATE when no stronger action intent exists.
+    if _contains_any(text, explicit_simulation_keywords):
+        return EngineeringIntent.SIMULATE
+
+    if _contains_any(text, scenario_context_keywords):
+        return EngineeringIntent.SIMULATE
+
+    if _contains_any(text, review_keywords):
+        return EngineeringIntent.REVIEW
 
     return EngineeringIntent.QUESTION
 
@@ -172,11 +99,7 @@ def route_request(
     has_architecture: bool = False,
     has_files: bool = False,
 ) -> dict:
-    """
-    Build the initial routing decision used by
-    the ArchGuard conversational orchestrator.
-    """
-
+    """Build the initial routing decision for the conversational orchestrator."""
     intent = detect_intent(prompt)
 
     return {
@@ -193,18 +116,8 @@ def route_request(
     }
 
 
-def get_pipeline(
-    intent: EngineeringIntent,
-    has_architecture: bool,
-) -> list[str]:
-    """
-    Determine which ArchGuard capabilities
-    should handle the request.
-
-    This only creates a plan. It does not execute
-    external tools or modify infrastructure.
-    """
-
+def get_pipeline(intent: EngineeringIntent, has_architecture: bool) -> list[str]:
+    """Determine which ArchGuard capabilities should handle the request."""
     if intent == EngineeringIntent.DESIGN:
         return [
             "requirements_analysis",
@@ -215,27 +128,13 @@ def get_pipeline(
 
     if intent == EngineeringIntent.REVIEW:
         pipeline = []
-
         if has_architecture:
-            pipeline.extend([
-                "digital_twin",
-                "graph_engine",
-            ])
-
-        pipeline.extend([
-            "risk_engine",
-            "well_architected_engine",
-        ])
-
+            pipeline.extend(["digital_twin", "graph_engine"])
+        pipeline.extend(["risk_engine", "well_architected_engine"])
         return pipeline
 
     if intent == EngineeringIntent.SIMULATE:
-        return [
-            "digital_twin",
-            "graph_engine",
-            "scenario_engine",
-            "risk_engine",
-        ]
+        return ["digital_twin", "graph_engine", "scenario_engine", "risk_engine"]
 
     if intent == EngineeringIntent.MODIFY:
         return [
@@ -255,6 +154,4 @@ def get_pipeline(
             "verification_engine",
         ]
 
-    return [
-        "architecture_qa",
-    ]
+    return ["architecture_qa"]
