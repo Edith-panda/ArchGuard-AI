@@ -36,6 +36,7 @@ export default function RemediationDock() {
   }, []);
 
   if (!result) return null;
+  const proposalKey = result?.execution?.result?.remediation_plan?.proposals?.[0]?.proposal_id || "remediation";
 
   return (
     <aside className={`remediation-dock ${open ? "open" : "collapsed"}`}>
@@ -43,7 +44,7 @@ export default function RemediationDock() {
         <span>SAFE REMEDIATION</span>
         <b>{open ? "Hide" : "Review approval"}</b>
       </button>
-      {open && <div className="remediation-dock-body"><RemediationActions result={result} /></div>}
+      {open && <div className="remediation-dock-body"><RemediationActions key={proposalKey} result={result} /></div>}
     </aside>
   );
 }
