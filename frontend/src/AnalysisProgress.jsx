@@ -1,3 +1,5 @@
+import "./WorkspaceUX.css";
+
 const STAGES = {
   design: ["Understanding requirements", "Designing system boundaries", "Selecting technologies", "Evaluating scalability", "Checking failure scenarios", "Preparing recommendations"],
   review: ["Reading architecture context", "Resolving components", "Building the digital twin", "Running risk analysis", "Evaluating architecture quality", "Preparing recommendations"],
