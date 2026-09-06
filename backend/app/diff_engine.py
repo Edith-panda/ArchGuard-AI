@@ -10,31 +10,29 @@ def database_diff(
             "terraform",
 
         "filename":
-            "proposed-database-change.tf",
+            "proposed-database-ha-change.tf",
 
         "component":
             component,
 
         "diff":
 """
-resource "google_sql_database_instance" "primary" {
-  name = "archguard-primary"
+module "postgres_ha" {
+  source = "./modules/postgres-ha"
+  name   = "archguard-primary"
 
-+ availability_type = "REGIONAL"
-
-+ backup_configuration {
-+   enabled = true
-+ }
-
-+ deletion_protection = true
++ high_availability      = true
++ automatic_failover     = true
++ point_in_time_recovery = true
++ deletion_protection    = true
 }
 """.strip(),
 
         "note":
             (
-                "Illustrative proposed Terraform "
-                "change. ArchGuard has not applied "
-                "this configuration."
+                "Illustrative vendor-neutral Terraform proposal. "
+                "Map these settings to the managed PostgreSQL provider "
+                "used by the target environment before implementation."
             ),
     }
 
