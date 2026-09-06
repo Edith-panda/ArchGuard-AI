@@ -17,10 +17,7 @@ function proposalTitle(proposal) {
 }
 
 export default function RemediationActions({ result }) {
-  const proposals = useMemo(
-    () => result?.execution?.result?.remediation_plan?.proposals || [],
-    [result],
-  );
+  const proposals = useMemo(() => result?.execution?.result?.remediation_plan?.proposals || [], [result]);
   const [selectedId, setSelectedId] = useState(proposals[0]?.proposal_id || "");
   const [preview, setPreview] = useState(null);
   const [state, setState] = useState(null);
@@ -37,6 +34,7 @@ export default function RemediationActions({ result }) {
   const rejected = approvalStatus === "rejected";
   const mcp = state?.mcp;
   const canCreatePr = approved && mcp?.configured && mcp?.write_enabled;
+  const previewed = preview?.proposal_id === proposalId;
 
   async function loadState() {
     if (!proposalId) return;
@@ -60,6 +58,10 @@ export default function RemediationActions({ result }) {
   }
 
   async function decide(action) {
+    if (action === "approve" && !previewed) {
+      setError("Preview the proposed change before approving it.");
+      return;
+    }
     setBusy(action);
     setError("");
     try {
@@ -122,22 +124,10 @@ export default function RemediationActions({ result }) {
       )}
 
       <div className="proposal-summary">
-        <div>
-          <span>Target</span>
-          <strong>{proposal?.change_scope || proposal?.finding?.component || "Architecture"}</strong>
-        </div>
-        <div>
-          <span>Risk</span>
-          <strong>{proposal?.finding?.risk_score ?? "—"}</strong>
-        </div>
-        <div>
-          <span>Severity</span>
-          <strong>{String(proposal?.finding?.severity || "unknown").toUpperCase()}</strong>
-        </div>
-        <div>
-          <span>Production</span>
-          <strong>Not modified</strong>
-        </div>
+        <div><span>Target</span><strong>{proposal?.change_scope || proposal?.finding?.component || "Architecture"}</strong></div>
+        <div><span>Risk</span><strong>{proposal?.finding?.risk_score ?? "—"}</strong></div>
+        <div><span>Severity</span><strong>{String(proposal?.finding?.severity || "unknown").toUpperCase()}</strong></div>
+        <div><span>Production</span><strong>Not modified</strong></div>
       </div>
 
       <div className="proposal-copy">
@@ -147,15 +137,19 @@ export default function RemediationActions({ result }) {
 
       <div className="remediation-actions">
         <button className="secondary-action" disabled={Boolean(busy)} onClick={showPreview}>
-          {busy === "preview" ? "Preparing preview…" : "Preview proposed change"}
+          {busy === "preview" ? "Preparing preview…" : previewed ? "Refresh preview" : "Preview proposed change"}
         </button>
         {!approved && !rejected && (
           <>
             <button className="reject-action" disabled={Boolean(busy)} onClick={() => decide("reject")}>Reject</button>
-            <button className="approve-action" disabled={Boolean(busy)} onClick={() => decide("approve")}>{busy === "approve" ? "Approving…" : "Approve change"}</button>
+            <button className="approve-action" disabled={Boolean(busy) || !previewed} onClick={() => decide("approve")} title={!previewed ? "Preview the proposed change first" : "Approve this remediation"}>
+              {busy === "approve" ? "Approving…" : "Approve change"}
+            </button>
           </>
         )}
       </div>
+
+      {!approved && !rejected && !previewed && <div className="approval-guidance">Preview is required before approval. No external action occurs during preview.</div>}
 
       {preview?.proposed_diff && (
         <div className="diff-preview">
@@ -178,9 +172,7 @@ export default function RemediationActions({ result }) {
             <span><small>Write gate</small><strong>{mcp?.write_enabled ? "Enabled" : "Disabled"}</strong></span>
             <span><small>Production execution</small><strong>No</strong></span>
           </div>
-          {!mcp?.configured || !mcp?.write_enabled ? (
-            <div className="mcp-warning">Approval succeeded, but GitHub MCP writes are still locked. Configure the demo repository and explicitly enable the write gate before creating a PR.</div>
-          ) : null}
+          {!mcp?.configured || !mcp?.write_enabled ? <div className="mcp-warning">Approval succeeded, but GitHub MCP writes are still locked. Configure the demo repository and explicitly enable the write gate before creating a PR.</div> : null}
           <button className="mcp-action" disabled={Boolean(busy) || !canCreatePr} onClick={createPullRequest}>
             {busy === "mcp" ? "Creating pull request…" : "Create Pull Request via MCP →"}
           </button>
