@@ -7,7 +7,6 @@ from pydantic import BaseModel, Field
 from .aggregator import aggregate_findings
 from .analyzer import analyze_architecture
 from .approval_engine import approve_proposal, get_proposal, register_proposals, reject_proposal
-from .artifact_parser import reconstruct_architecture
 from .assistant_engine import generate_assistant_response
 from .assistant_executor import AssistantExecutionError, execute_assistant_intent
 from .assistant_synthesis import synthesize_assistant_response
@@ -15,6 +14,7 @@ from .conversation_router import EngineeringIntent, route_request
 from .deduplicator import deduplicate_findings
 from .diff_engine import generate_proposed_diff
 from .gemini_analyzer import analyze_with_gemini
+from .github_mcp_executor import GitHubMCPError, create_github_remediation_pr, github_mcp_status, preview_github_remediation
 from .graph_engine import build_architecture_graph
 from .graph_risk_engine import analyze_graph_risks, get_critical_components
 from .ingestion_service import process_architecture_inputs
@@ -35,7 +35,7 @@ from .well_architected import score_well_architected
 app = FastAPI(
     title="ArchGuard AI",
     description="AI-powered software architecture design, review and remediation",
-    version="0.2.0",
+    version="0.3.0",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -108,12 +108,17 @@ def architecture_to_dict(architecture: ArchitectureInput) -> dict:
 
 @app.get("/")
 def root():
-    return {"name": "ArchGuard AI", "status": "running", "version": "0.2.0"}
+    return {"name": "ArchGuard AI", "status": "running", "version": "0.3.0"}
 
 
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+@app.get("/mcp/github/status")
+def mcp_github_status():
+    return {"status": "success", **github_mcp_status()}
 
 
 @app.post("/ingest")
@@ -123,7 +128,6 @@ async def ingest_architecture(
 ):
     if not files and not (manual_input and manual_input.strip()):
         raise HTTPException(400, "Upload at least one file or provide manual input.")
-
     try:
         result = await process_architecture_inputs(files or [], manual_input)
     except ValueError as exc:
@@ -140,10 +144,8 @@ async def ingest_architecture(
         }
         for item in result.get("processed_files", [])
     ]
-
     plan = summarize_plan(build_execution_plan(artifacts)) if artifacts else []
     multimodal = result.get("multimodal", {})
-
     return {
         "status": "success",
         "artifact_count": len(artifacts),
@@ -174,28 +176,22 @@ def analyze(architecture: ArchitectureInput):
     graph = build_architecture_graph(architecture_dict)
     rule_findings = analyze_architecture(architecture_dict)
     graph_findings = analyze_graph_risks(graph)
-
     gemini_available = True
     try:
         gemini_analysis = analyze_with_gemini(architecture_dict)
     except Exception:
         gemini_available = False
         gemini_analysis = EmptyGeminiAnalysis()
-
     all_findings = aggregate_findings(rule_findings, gemini_analysis)
     all_findings.extend(graph_findings)
     scored = assign_risk_scores(all_findings)
     unique = deduplicate_findings(scored)
     ranked = sorted(unique, key=lambda item: item.risk_score, reverse=True)
     finding_dicts = [item.model_dump() for item in ranked]
-
     return {
         "status": "success",
         "gemini_available": gemini_available,
-        "architecture": {
-            "component_count": graph.number_of_nodes(),
-            "connection_count": graph.number_of_edges(),
-        },
+        "architecture": {"component_count": graph.number_of_nodes(), "connection_count": graph.number_of_edges()},
         "critical_components": get_critical_components(graph),
         "knowledge_sources": retrieve_for_architecture(architecture_dict, limit=4),
         "well_architected": score_well_architected(finding_dicts),
@@ -210,6 +206,25 @@ def remediation_plan(request: RemediationRequest):
     plan = build_remediation_plan(request.findings)
     register_proposals(plan["proposals"])
     return plan
+
+
+@app.get("/remediation/{proposal_id}/state")
+def remediation_state(proposal_id: str):
+    proposal = get_proposal(proposal_id)
+    if not proposal:
+        raise HTTPException(404, "Remediation proposal not found.")
+    return {
+        "status": "success",
+        "proposal_id": proposal_id,
+        "approval_status": proposal.get("approval_status", "pending"),
+        "approved": bool(proposal.get("approved")),
+        "strategy": proposal.get("strategy"),
+        "change_scope": proposal.get("change_scope"),
+        "recommended_change": proposal.get("recommended_change"),
+        "validation_checks": proposal.get("validation_checks", []),
+        "mcp_execution": proposal.get("mcp_execution"),
+        "mcp": github_mcp_status(),
+    }
 
 
 @app.get("/remediation/{proposal_id}/diff")
@@ -227,6 +242,14 @@ def remediation_diff(proposal_id: str):
     }
 
 
+@app.get("/remediation/{proposal_id}/mcp-preview")
+def remediation_mcp_preview(proposal_id: str):
+    try:
+        return {"status": "success", **preview_github_remediation(proposal_id)}
+    except GitHubMCPError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/remediation/approve")
 def approve_remediation(request: ApprovalRequest):
     try:
@@ -239,7 +262,7 @@ def approve_remediation(request: ApprovalRequest):
         "approval_status": proposal["approval_status"],
         "approved": proposal["approved"],
         "execution_allowed": False,
-        "message": "Proposal approved. Production execution remains disabled.",
+        "message": "Proposal approved. Production execution remains disabled; MCP may create a review-only pull request when explicitly enabled.",
     }
 
 
@@ -257,6 +280,16 @@ def reject_remediation(request: ApprovalRequest):
         "execution_allowed": False,
         "message": "Proposal rejected.",
     }
+
+
+@app.post("/remediation/{proposal_id}/mcp-create-pr")
+def remediation_mcp_create_pr(proposal_id: str):
+    try:
+        return create_github_remediation_pr(proposal_id)
+    except GitHubMCPError as exc:
+        message = str(exc)
+        status = 403 if "approval" in message.lower() or "disabled" in message.lower() else 400
+        raise HTTPException(status, message) from exc
 
 
 @app.post("/remediation/{proposal_id}/execute-sandbox")
@@ -324,15 +357,8 @@ def architecture_assistant(request: AssistantRequest):
     prompt = request.prompt.strip()
     if not prompt:
         raise HTTPException(400, "Prompt cannot be empty.")
-
-    routing = route_request(
-        prompt=prompt,
-        has_architecture=bool(request.architecture),
-        has_files=request.has_files,
-    )
+    routing = route_request(prompt=prompt, has_architecture=bool(request.architecture), has_files=request.has_files)
     intent = EngineeringIntent(routing["intent"])
-
-    # DESIGN and general QUESTION can start before an architecture exists.
     if intent in {EngineeringIntent.DESIGN, EngineeringIntent.QUESTION}:
         try:
             result = generate_assistant_response(
@@ -351,18 +377,11 @@ def architecture_assistant(request: AssistantRequest):
             }
         except Exception as exc:
             raise HTTPException(503, f"ArchGuard reasoning is temporarily unavailable: {exc}") from exc
-
     try:
         result = execute_assistant_intent(intent, prompt, request.architecture)
     except AssistantExecutionError as exc:
         raise HTTPException(400, str(exc)) from exc
-
-    return {
-        "status": "success",
-        "mode": "conversation",
-        "routing": routing,
-        "execution": {"started": True, "result": result},
-    }
+    return {"status": "success", "mode": "conversation", "routing": routing, "execution": {"started": True, "result": result}}
 
 
 @app.post("/assistant/input")
@@ -374,7 +393,6 @@ async def assistant_input(
     prompt = prompt.strip()
     if not prompt:
         raise HTTPException(400, "Prompt cannot be empty.")
-
     try:
         ingestion = await process_architecture_inputs(files or [], manual_input)
     except ValueError as exc:
@@ -383,13 +401,8 @@ async def assistant_input(
         raise HTTPException(500, f"ArchGuard could not process supplied artifacts: {exc}") from exc
 
     architecture = ingestion.get("architecture")
-    routing = route_request(
-        prompt=prompt,
-        has_architecture=bool(architecture),
-        has_files=bool(files),
-    )
+    routing = route_request(prompt=prompt, has_architecture=bool(architecture), has_files=bool(files))
     intent = EngineeringIntent(routing["intent"])
-
     try:
         execution_result = execute_assistant_intent(intent, prompt, architecture)
     except AssistantExecutionError as exc:
@@ -397,11 +410,16 @@ async def assistant_input(
     except Exception as exc:
         execution_result = {"status": "error", "error": str(exc)}
 
+    if intent == EngineeringIntent.REMEDIATE and execution_result.get("status") == "approval_required":
+        prioritized = execution_result.get("prioritized_findings") or []
+        if prioritized:
+            plan = build_remediation_plan(prioritized)
+            register_proposals(plan["proposals"])
+            execution_result["remediation_plan"] = plan
+
     synthesis_status = "skipped"
     synthesis_error = None
     answer = None
-
-    # DESIGN/QUESTION need model reasoning even without a pre-existing architecture.
     if intent in {EngineeringIntent.DESIGN, EngineeringIntent.QUESTION}:
         try:
             generated = generate_assistant_response(
@@ -417,7 +435,6 @@ async def assistant_input(
             synthesis_status = "error"
             synthesis_error = str(exc)
             answer = "The AI design/reasoning layer is temporarily unavailable."
-
     elif execution_result.get("status") not in {"blocked", "error"}:
         try:
             answer = synthesize_assistant_response(
@@ -451,7 +468,6 @@ async def assistant_input(
         "multimodal": ingestion.get("multimodal", {}),
         "manual_input_provided": bool(manual_input and manual_input.strip()),
     }
-
     return {
         "status": "success",
         "mode": "conversational_architecture",
