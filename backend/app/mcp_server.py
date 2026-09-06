@@ -6,6 +6,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .approval_engine import get_proposal
 from .architecture_versions import compare_architectures
+from .completion_report import build_completion_report
 from .github_mcp_executor import (
     create_github_remediation_pr,
     github_mcp_status,
@@ -83,6 +84,28 @@ def verify_before_after(
         after_findings=after_findings,
         before_well_architected=before_health or {},
         after_well_architected=after_health or {},
+    )
+
+
+@mcp.tool()
+def final_architecture_outcome(
+    before_architecture: dict[str, Any],
+    after_architecture: dict[str, Any],
+    before_findings: list[dict[str, Any]],
+    after_findings: list[dict[str, Any]],
+    before_health: dict[str, Any] | None = None,
+    after_health: dict[str, Any] | None = None,
+    mcp_execution: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Produce the end-of-loop V1→V2, risk, health and external-action report."""
+    return build_completion_report(
+        before_architecture=before_architecture,
+        after_architecture=after_architecture,
+        before_findings=before_findings,
+        after_findings=after_findings,
+        before_health=before_health,
+        after_health=after_health,
+        mcp_execution=mcp_execution,
     )
 
 
