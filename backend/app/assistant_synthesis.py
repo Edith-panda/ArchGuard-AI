@@ -12,7 +12,7 @@ IMPORTANT RULES:
 
 1. Treat the supplied ArchGuard engine results as the source of truth for
    deterministic findings, topology, risk scores, scenario results, and
-   Well-Architected scores.
+   architecture-health scores.
 
 2. Do not invent services, dependencies, failures, metrics, or detected risks.
 
@@ -38,6 +38,12 @@ IMPORTANT RULES:
 
 10. Keep answers structured and useful to a software engineer.
 
+11. Keep product-facing framework language vendor-neutral. Call the score
+    "Architecture Health" or "Well-Architected assessment". Do not mention
+    a cloud vendor's framework branding unless the user explicitly asks about
+    that vendor or framework. Technology recommendations may still compare
+    vendors when they are technically relevant to the user's request.
+
 UI OUTPUT CONTRACT:
 - Never emit an empty heading or section.
 - Never emit horizontal-rule separators such as --- or ***.
@@ -53,7 +59,7 @@ UI OUTPUT CONTRACT:
 
 
 def _safe_json(value: Any) -> str:
-    """Serialize ArchGuard results safely for Gemini."""
+    """Serialize ArchGuard results safely for the reasoning layer."""
     try:
         return json.dumps(value, indent=2, default=str)
     except Exception:
@@ -98,7 +104,7 @@ For REVIEW:
 - identify the most important detected risks
 - explain why they matter
 - prioritize recommended changes
-- mention relevant Well-Architected observations
+- mention relevant architecture-health observations
 - explain trade-offs
 
 For SIMULATE:
@@ -140,7 +146,7 @@ def synthesize_assistant_response(
     architecture: Optional[dict],
     execution_result: Optional[dict],
 ) -> str:
-    """Ask Gemini to convert ArchGuard's structured result into a grounded response."""
+    """Ask the reasoning model to convert ArchGuard's structured result into a grounded response."""
 
     prompt = build_synthesis_prompt(
         user_prompt=user_prompt,
