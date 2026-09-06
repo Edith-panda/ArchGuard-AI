@@ -5,6 +5,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from .approval_engine import get_proposal
+from .architecture_versions import compare_architectures
 from .github_mcp_executor import (
     create_github_remediation_pr,
     github_mcp_status,
@@ -61,13 +62,22 @@ def create_approved_remediation_pull_request(
 
 
 @mcp.tool()
+def compare_architecture_versions(
+    before_architecture: dict[str, Any],
+    after_architecture: dict[str, Any],
+) -> dict[str, Any]:
+    """Return an explicit V1-to-V2 component and dependency delta."""
+    return compare_architectures(before_architecture, after_architecture)
+
+
+@mcp.tool()
 def verify_before_after(
     before_findings: list[dict[str, Any]],
     after_findings: list[dict[str, Any]],
     before_health: dict[str, Any] | None = None,
     after_health: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compare before/after risk findings after a remediation has been reviewed/applied."""
+    """Compare before/after risks after a reviewed remediation has been applied."""
     return verify_remediation(
         before_findings=before_findings,
         after_findings=after_findings,
